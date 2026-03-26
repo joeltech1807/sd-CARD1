@@ -42,6 +42,14 @@ TICK_INTERVAL_S    = 0.6
 ELEVATED_THRESHOLD = 0.40
 CRITICAL_THRESHOLD = 0.70
 
+STATE_HEALTHY = "HEALTHY"
+STATE_WEAK = "WEAK"
+STATE_CRITICAL = "CRITICAL"
+STATE_RETIRED = "RETIRED"
+
+BUCKET_ORDER = [STATE_HEALTHY, STATE_WEAK, STATE_CRITICAL, STATE_RETIRED]
+SELECTABLE_BUCKETS = [STATE_HEALTHY, STATE_WEAK, STATE_CRITICAL]
+
 
 # ─────────────────────────────────────────────────────
 # SD CARD AUTO-DETECTION  (Windows + Linux/macOS)
@@ -106,16 +114,63 @@ def choose_path(user_path: Optional[str]) -> str:
 @dataclass
 class BlockState:
     block_id: int
+    write_count: int = 0
+    error_count: int = 0
+    latency: float = 1.0
+    state: str = STATE_HEALTHY
     latency_history: deque = field(default_factory=lambda: deque(maxlen=HISTORY_LEN))
     access_count: int = 0
-    write_count: int = 0
     read_count: int = 0
     is_avoided: bool = False
     degradation_injected: bool = False
 
+    def record_write(self, latency_ms: float):
+        self.write_count += 1
+        self.access_count += 1
+        self.latency = latency_ms
+        self.latency_history.append(latency_ms)
+
+    def record_read(self, latency_ms: float):
+        self.read_count += 1
+        self.access_count += 1
+        self.latency = latency_ms
+        self.latency_history.append(latency_ms)
+
+    def record_error(self, count: int = 1):
+        self.error_count += max(0, count)
+
+    def set_state(self, state: str):
+        self.state = state
+
+    def reset_runtime(self):
+        self.write_count = 0
+        self.error_count = 0
+        self.latency = 1.0
+        self.state = STATE_HEALTHY
+        self.latency_history.clear()
+        self.access_count = 0
+        self.read_count = 0
+        self.is_avoided = False
+        self.degradation_injected = False
+
+    def sync_state(self):
+        if self.is_avoided:
+            self.state = STATE_RETIRED
+            return
+
+        score = self.risk_score
+        if score >= CRITICAL_THRESHOLD:
+            self.state = STATE_CRITICAL
+        elif score >= ELEVATED_THRESHOLD:
+            self.state = STATE_WEAK
+        else:
+            self.state = STATE_HEALTHY
+
     @property
     def avg_latency(self) -> float:
-        return sum(self.latency_history) / len(self.latency_history) if self.latency_history else 0.0
+        if self.latency_history:
+            return sum(self.latency_history) / len(self.latency_history)
+        return self.latency
 
     @property
     def latency_variance(self) -> float:
@@ -140,38 +195,38 @@ class BlockState:
     def risk_score(self) -> float:
         h = list(self.latency_history)
 
-    if len(h) < 6:
-        return 0.0
+        if len(h) < 6:
+            return 0.0
 
-    # 🔥 Baseline = older half
-    half = len(h) // 2
-    baseline = sum(h[:half]) / max(half, 1)
+        # 🔥 Baseline = older half
+        half = len(h) // 2
+        baseline = sum(h[:half]) / max(half, 1)
 
-    # 🔥 Recent behavior
-    recent = h[half:]
-    recent_avg = sum(recent) / max(len(recent), 1)
+        # 🔥 Recent behavior
+        recent = h[half:]
+        recent_avg = sum(recent) / max(len(recent), 1)
 
-    # 🔥 Deviation ratio (core idea)
-    deviation = recent_avg / max(baseline, 1e-6)
+        # 🔥 Deviation ratio (core idea)
+        deviation = recent_avg / max(baseline, 1e-6)
 
-    # 🔥 Variability
-    variance = math.sqrt(self.latency_variance)
+        # 🔥 Variability
+        variance = math.sqrt(self.latency_variance)
 
-    # 🔥 Normalize (adaptive, not fixed)
-    dev_score = min((deviation - 1.0) / 2.0, 1.0) if deviation > 1 else 0.0
-    var_score = min(variance / (baseline + 1e-6), 1.0)
+        # 🔥 Normalize (adaptive, not fixed)
+        dev_score = min((deviation - 1.0) / 2.0, 1.0) if deviation > 1 else 0.0
+        var_score = min(variance / (baseline + 1e-6), 1.0)
 
-    # 🔥 Trend already computed
-    trend_score = max(min(self.recent_trend, 1.0), 0.0)
+        # 🔥 Trend already computed
+        trend_score = max(min(self.recent_trend, 1.0), 0.0)
 
-    # 🔥 Weighted score
-    score = (
-        0.5 * dev_score +     # deviation is most important
-        0.3 * var_score +     # instability
-        0.2 * trend_score     # increasing degradation
-    )
+        # 🔥 Weighted score
+        score = (
+            0.5 * dev_score +     # deviation is most important
+            0.3 * var_score +     # instability
+            0.2 * trend_score     # increasing degradation
+        )
 
-    return round(min(max(score, 0.0), 1.0), 4)
+        return round(min(max(score, 0.0), 1.0), 4)
 
     @property
     def classification(self) -> str:
@@ -183,6 +238,67 @@ class BlockState:
         if s >= ELEVATED_THRESHOLD:
             return "ELEVATED"
         return "NORMAL"
+
+
+class BucketManager:
+    def __init__(self, blocks: List[BlockState]):
+        self.buckets: Dict[str, List[int]] = {name: [] for name in BUCKET_ORDER}
+        self.pointer: Dict[str, int] = {name: 0 for name in SELECTABLE_BUCKETS}
+        self.block_bucket: Dict[int, str] = {}
+        self.sync_all(blocks)
+
+    def _remove_from_bucket(self, bucket_name: str, block_id: int):
+        bucket = self.buckets[bucket_name]
+        try:
+            idx = bucket.index(block_id)
+        except ValueError:
+            return
+
+        bucket.pop(idx)
+        if bucket_name in self.pointer:
+            self.pointer[bucket_name] = self.pointer[bucket_name] % len(bucket) if bucket else 0
+
+    def _add_to_bucket(self, bucket_name: str, block_id: int):
+        bucket = self.buckets[bucket_name]
+        if block_id not in bucket:
+            bucket.append(block_id)
+
+    def sync_block(self, block: BlockState):
+        desired = block.state
+        current = self.block_bucket.get(block.block_id)
+        if current == desired:
+            return
+
+        if current is not None:
+            self._remove_from_bucket(current, block.block_id)
+
+        self._add_to_bucket(desired, block.block_id)
+        self.block_bucket[block.block_id] = desired
+
+    def sync_all(self, blocks: List[BlockState]):
+        for block in blocks:
+            block.sync_state()
+            self.sync_block(block)
+
+    def select_next(self) -> Optional[int]:
+        for bucket_name in SELECTABLE_BUCKETS:
+            bucket = self.buckets[bucket_name]
+            if not bucket:
+                continue
+            pointer = self.pointer[bucket_name] % len(bucket)
+            block_id = bucket[pointer]
+            self.pointer[bucket_name] = (pointer + 1) % len(bucket)
+            return block_id
+        return None
+
+    def snapshot(self) -> Dict[str, List[int]]:
+        return {name: list(blocks) for name, blocks in self.buckets.items()}
+
+    def reset(self, blocks: List[BlockState]):
+        self.buckets = {name: [] for name in BUCKET_ORDER}
+        self.pointer = {name: 0 for name in SELECTABLE_BUCKETS}
+        self.block_bucket = {}
+        self.sync_all(blocks)
 
 
 # ─────────────────────────────────────────────────────
@@ -222,6 +338,11 @@ class Telemetry:
         import shutil
         shutil.rmtree(self.base_path, ignore_errors=True)
 
+    def reset(self):
+        self.cleanup()
+        os.makedirs(self.base_path, exist_ok=True)
+        self._buf = os.urandom(BLOCK_SIZE_BYTES)
+
 
 # ─────────────────────────────────────────────────────
 # STRESS ENGINE
@@ -229,9 +350,10 @@ class Telemetry:
 class StressEngine:
     MODES = ["random", "mixed", "sequential"]
 
-    def __init__(self, telemetry: Telemetry, blocks: Dict[int, BlockState]):
+    def __init__(self, telemetry: Telemetry, blocks: List[BlockState], bucket_manager: BucketManager):
         self.telemetry = telemetry
         self.blocks = blocks
+        self.bucket_manager = bucket_manager
         self.mode = "mixed"
         self.intensity = 0.5
         self._degraded: Dict[int, float] = {}
@@ -241,13 +363,17 @@ class StressEngine:
         self.blocks[block_id].degradation_injected = True
         log.info(f"[INJECT] Block {block_id} +{delay_ms:.0f} ms delay")
 
+    def reset(self):
+        self._degraded.clear()
+
     def run_tick(self) -> List[Tuple[int, str, float]]:
         results = []
         count = max(1, int(self.intensity * 5))
-        available = [b for b in self.blocks if not self.blocks[b].is_avoided] or list(self.blocks)
-        targets = random.sample(available, min(count, len(available)))
+        for _ in range(count):
+            blk_id = self.bucket_manager.select_next()
+            if blk_id is None:
+                break
 
-        for blk_id in targets:
             extra = self._degraded.get(blk_id, 0.0)
             if random.random() < 0.04:
                 extra += random.uniform(20, 60)
@@ -260,15 +386,16 @@ class StressEngine:
 
             if op == "write":
                 lat = self.telemetry.measure_write(blk_id, extra)
-                self.blocks[blk_id].write_count += 1
+                self.blocks[blk_id].record_write(lat)
             else:
                 lat = self.telemetry.measure_read(blk_id)
                 if extra > 0:
                     lat += extra
-                self.blocks[blk_id].read_count += 1
+                self.blocks[blk_id].record_read(lat)
 
-            self.blocks[blk_id].access_count += 1
-            self.blocks[blk_id].latency_history.append(lat)
+            if extra > 0:
+                self.blocks[blk_id].record_error(1)
+
             results.append((blk_id, op, lat))
 
         return results
@@ -278,8 +405,9 @@ class StressEngine:
 # DECISION ENGINE
 # ─────────────────────────────────────────────────────
 class DecisionEngine:
-    def __init__(self, blocks: Dict[int, BlockState]):
+    def __init__(self, blocks: List[BlockState], bucket_manager: BucketManager):
         self.blocks = blocks
+        self.bucket_manager = bucket_manager
         self.avoided_blocks: List[int] = []
         self.action_log: deque = deque(maxlen=200)
 
@@ -288,59 +416,70 @@ class DecisionEngine:
         log.info(f"[DECISION] {msg}")
 
     def evaluate(self):
-        for blk_id, blk in self.blocks.items():
+        for blk in self.blocks:
             cls = blk.classification
             if cls == "CRITICAL" and not blk.is_avoided:
                 blk.is_avoided = True
-                self.avoided_blocks.append(blk_id)
-                self._log(f"🔴 Block {blk_id} CRITICAL (risk={blk.risk_score:.2f}) — writes redirected")
+                self.avoided_blocks.append(blk.block_id)
+                blk.sync_state()
+                self._log(f"[CRITICAL] Block {blk.block_id} risk={blk.risk_score:.2f} writes redirected")
             elif blk.is_avoided and not blk.degradation_injected:
                 if blk.risk_score < ELEVATED_THRESHOLD * 0.8:
                     blk.is_avoided = False
-                    if blk_id in self.avoided_blocks:
-                        self.avoided_blocks.remove(blk_id)
-                    self._log(f"✅ Block {blk_id} recovered — re-enabled (risk={blk.risk_score:.2f})")
+                    if blk.block_id in self.avoided_blocks:
+                        self.avoided_blocks.remove(blk.block_id)
+                    blk.sync_state()
+                    self._log(f"[RECOVERED] Block {blk.block_id} risk={blk.risk_score:.2f} re-enabled")
             elif cls == "ELEVATED":
-                self._log(f"🟡 Block {blk_id} elevated (risk={blk.risk_score:.2f})")
+                self._log(f"[ELEVATED] Block {blk.block_id} risk={blk.risk_score:.2f}")
 
     def top_risky(self, n: int = 5) -> List[dict]:
-        # Exclude avoided blocks — they're already handled; show only active risks
-        active = [b for b in self.blocks.values() if not b.is_avoided]
+        # Exclude avoided blocks; they're already handled.
+        active = [b for b in self.blocks if not b.is_avoided]
         ranked = sorted(active, key=lambda b: b.risk_score, reverse=True)
         return [
             {
                 "block_id": b.block_id,
                 "risk_score": b.risk_score,
                 "classification": b.classification,
+                "state": b.state,
                 "avg_latency": round(b.avg_latency, 2),
                 "variance": round(b.latency_variance, 2),
             }
             for b in ranked[:n]
         ]
 
+    def reset(self):
+        self.avoided_blocks.clear()
+        self.action_log.clear()
 
-# ─────────────────────────────────────────────────────
 # MAIN SYSTEM
 # ─────────────────────────────────────────────────────
 class StorageGuardSystem:
     def __init__(self, base_path: str):
-        self.blocks: Dict[int, BlockState] = {i: BlockState(block_id=i) for i in range(NUM_BLOCKS)}
-        self.telemetry  = Telemetry(base_path)
-        self.stress     = StressEngine(self.telemetry, self.blocks)
-        self.decision   = DecisionEngine(self.blocks)
-        self.base_path  = base_path
+        self.blocks: List[BlockState] = [BlockState(block_id=i) for i in range(NUM_BLOCKS)]
+        self.block_map: Dict[int, BlockState] = {block.block_id: block for block in self.blocks}
+        self.bucket_manager = BucketManager(self.blocks)
+        self.telemetry = Telemetry(base_path)
+        self.stress = StressEngine(self.telemetry, self.blocks, self.bucket_manager)
+        self.decision = DecisionEngine(self.blocks, self.bucket_manager)
+        self.base_path = base_path
 
-        self._tick           = 0
-        self._total_writes   = 0
-        self._total_reads    = 0
+        self._tick = 0
+        self._total_writes = 0
+        self._total_reads = 0
         self._avoided_writes = 0
-        self._trad_latency   = 0.0
-        self._prop_latency   = 0.0
+        self._trad_latency = 0.0
+        self._prop_latency = 0.0
+        self._paused = False
 
         # Scheduled controlled fault injections
         self._inject_schedule = {10: (4, 35.0), 22: (11, 50.0), 38: (19, 70.0)}
 
     def tick(self) -> dict:
+        if self._paused:
+            return self._build_payload()
+
         self._tick += 1
         if self._tick in self._inject_schedule:
             blk, delay = self._inject_schedule[self._tick]
@@ -348,16 +487,18 @@ class StorageGuardSystem:
 
         results = self.stress.run_tick()
         self.decision.evaluate()
+        self.bucket_manager.sync_all(self.blocks)
 
         for blk_id, op, lat in results:
+            block = self.block_map[blk_id]
             if op == "write":
                 self._total_writes += 1
-                if self.blocks[blk_id].is_avoided:
+                if block.is_avoided:
                     self._avoided_writes += 1
             else:
                 self._total_reads += 1
             self._trad_latency += lat
-            self._prop_latency += (5.0 if self.blocks[blk_id].is_avoided else lat)
+            self._prop_latency += (5.0 if block.is_avoided else lat)
 
         return self._build_payload()
 
@@ -367,6 +508,10 @@ class StorageGuardSystem:
                 "id": b.block_id,
                 "risk": b.risk_score,
                 "cls": b.classification,
+                "state": b.state,
+                "write_count": b.write_count,
+                "error_count": b.error_count,
+                "latency": round(b.latency, 2),
                 "avg_lat": round(b.avg_latency, 2),
                 "variance": round(b.latency_variance, 2),
                 "trend": round(b.recent_trend, 4),
@@ -374,11 +519,11 @@ class StorageGuardSystem:
                 "avoided": b.is_avoided,
                 "injected": b.degradation_injected,
             }
-            for b in self.blocks.values()
+            for b in self.blocks
         ]
 
         all_readings = []
-        for b in self.blocks.values():
+        for b in self.blocks:
             all_readings.extend(list(b.latency_history)[-5:])
         lat_series = [round(x, 2) for x in all_readings[-60:]]
 
@@ -389,10 +534,13 @@ class StorageGuardSystem:
             "tick": self._tick,
             "ts": time.time(),
             "blocks": blocks_data,
+            "buckets": self.bucket_manager.snapshot(),
+            "bucket_pointers": dict(self.bucket_manager.pointer),
             "top_risky": self.decision.top_risky(5),
             "latency_series": lat_series,
             "action_log": action_log,
             "sd_path": self.base_path,
+            "paused": self._paused,
             "stats": {
                 "total_writes": self._total_writes,
                 "total_reads": self._total_reads,
@@ -413,14 +561,38 @@ class StorageGuardSystem:
         self.stress.intensity = max(0.1, min(1.0, intensity))
 
     def inject(self, block_id: int, delay_ms: float):
-        if block_id in self.blocks:
+        if block_id in self.block_map:
             self.stress.inject_degradation(block_id, delay_ms)
+
+    def toggle_pause(self):
+        self._paused = not self._paused
+        log.info(f"[PAUSE] Simulation {'paused' if self._paused else 'running'}")
+
+    def set_paused(self, paused: bool):
+        self._paused = bool(paused)
+        log.info(f"[PAUSE] Simulation {'paused' if self._paused else 'running'}")
 
     def cleanup(self):
         self.telemetry.cleanup()
 
+    def reset(self):
+        self._tick = 0
+        self._total_writes = 0
+        self._total_reads = 0
+        self._avoided_writes = 0
+        self._trad_latency = 0.0
+        self._prop_latency = 0.0
+        self._paused = False
 
-# ─────────────────────────────────────────────────────
+        for block in self.blocks:
+            block.reset_runtime()
+
+        self.telemetry.reset()
+        self.stress.reset()
+        self.decision.reset()
+        self.bucket_manager.reset(self.blocks)
+        log.info("[RESET] Simulation state cleared")
+
 # WEBSOCKET SERVER
 # ─────────────────────────────────────────────────────
 async def ws_handler(websocket, system: StorageGuardSystem):
@@ -444,6 +616,10 @@ async def ws_handler(websocket, system: StorageGuardSystem):
                         system.set_intensity(float(cmd["value"]))
                     elif t == "inject":
                         system.inject(int(cmd["block"]), float(cmd["delay"]))
+                    elif t == "reset":
+                        system.reset()
+                    elif t == "toggle_pause":
+                        system.toggle_pause()
                 except Exception as e:
                     log.warning(f"Bad command: {e}")
 

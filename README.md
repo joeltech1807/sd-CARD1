@@ -66,6 +66,16 @@ The status badge switches from **SIMULATING** → **CONNECTED**.
 
 ## System Design
 
+### Block Model
+- Each block tracks `block_id`, `write_count`, `error_count`, `latency`, and `state`
+- Blocks start as `HEALTHY` with `write_count = 0`, `error_count = 0`, and `latency = 1`
+- The backend stores blocks in a list and keeps an index map for direct access
+
+### Buckets + Round Robin
+- Blocks are grouped into `HEALTHY`, `WEAK`, `CRITICAL`, and `RETIRED` buckets
+- Selection uses a round-robin pointer per selectable bucket for fair reuse
+- Bucket membership is refreshed whenever a block state changes
+
 ### Telemetry
 - Measures actual `open/write/fsync/read` time in milliseconds
 - 32 logical blocks × 64 KB each

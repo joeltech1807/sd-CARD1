@@ -232,6 +232,94 @@ input[type=range] {
 .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .legend-dot  { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,.1); }
 
+/* ?????? BUCKET VIEW ???????????????????????????????????????????????????????????????????????????????????? */
+.bucket-panel {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.bucket-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.bucket-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.bucket-sub {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.bucket-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.bucket-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 86px;
+}
+.bucket-card.HEALTHY { border-left: 3px solid var(--green); }
+.bucket-card.WEAK { border-left: 3px solid var(--yellow); }
+.bucket-card.CRITICAL { border-left: 3px solid var(--red); }
+.bucket-card.RETIRED { border-left: 3px solid var(--subtle); }
+.bucket-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.bucket-name {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.bucket-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+.bucket-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.bucket-pill {
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.bucket-pill.pointer {
+  outline: 2px solid rgba(37, 99, 235, .35);
+  border-color: #93c5fd;
+}
+.bucket-empty {
+  font-size: 10px;
+  color: var(--subtle);
+  font-family: var(--mono);
+  padding: 4px 0 0;
+}
+
+
 /* ── PREDICTION PANEL ────────────────────────── */
 .risk-list { display: flex; flex-direction: column; gap: 8px; }
 .risk-item {
@@ -394,6 +482,8 @@ input[type=range] {
         <span id="intensityVal" class="ctrl-label">5</span>
       </div>
       <button class="btn btn-primary" onclick="openModal()">+ Inject Fault</button>
+      <button class="btn" id="pauseBtn" onclick="togglePause()">Pause</button>
+      <button class="btn" onclick="resetSimulation()">Reset</button>
     </div>
   </div>
 </header>
@@ -450,6 +540,17 @@ input[type=range] {
           <div class="legend-item"><div class="legend-dot" style="background:#fffbeb;border-color:#fcd34d"></div>Elevated</div>
           <div class="legend-item"><div class="legend-dot" style="background:#fef2f2;border-color:#fca5a5"></div>Critical</div>
           <div class="legend-item"><div class="legend-dot" style="background:#f8fafc;border-color:#e2e8f0"></div>Avoided</div>
+        </div>
+
+        <div class="bucket-panel">
+          <div class="bucket-head">
+            <div>
+              <div class="bucket-title">Bucket Map</div>
+              <div class="bucket-sub">State groups with round-robin order</div>
+            </div>
+            <div class="bucket-sub" id="bucketHint">Pointer: HEALTHY</div>
+          </div>
+          <div class="bucket-grid" id="bucketGrid"></div>
         </div>
       </div>
     </div>
@@ -688,6 +789,48 @@ function renderBlocks(blocks) {
   });
 }
 
+function renderBuckets(buckets, pointers = {}) {
+  const order = ['HEALTHY', 'WEAK', 'CRITICAL', 'RETIRED'];
+  const hint = $('bucketHint');
+  const grid = $('bucketGrid');
+  if (!grid) return;
+
+  grid.innerHTML = order.map(name => {
+    const blocks = buckets && buckets[name] ? buckets[name] : [];
+    const pointer = Number.isInteger(pointers[name]) ? pointers[name] : 0;
+    const displayCount = Math.min(blocks.length, 12);
+    const pills = blocks.slice(0, displayCount).map((id, idx) => {
+      const cls = blocks.length > 0 && idx === (pointer % blocks.length) ? 'bucket-pill pointer' : 'bucket-pill';
+      return `<span class="${cls}">#${id}</span>`;
+    }).join('');
+    const overflow = blocks.length > displayCount ? `<span class="bucket-pill">+${blocks.length - displayCount}</span>` : "";
+    return `
+      <div class="bucket-card ${name}">
+        <div class="bucket-row">
+          <span class="bucket-name">${name}</span>
+          <span class="bucket-count">${blocks.length}</span>
+        </div>
+        <div class="bucket-pills">
+          ${pills || '<div class="bucket-empty">No blocks</div>'}
+          ${overflow}
+        </div>
+      </div>`;
+  }).join('');
+
+  if (hint) {
+    const nextBucket = order.find(name => buckets && buckets[name] && buckets[name].length);
+    if (!nextBucket) {
+      hint.textContent = 'Pointer: none';
+    } else {
+      const arr = buckets[nextBucket];
+      const ptr = Number.isInteger(pointers[nextBucket]) ? pointers[nextBucket] : 0;
+      const nextId = arr[ptr % arr.length];
+      hint.textContent = `Pointer: ${nextBucket} → #${nextId}`;
+    }
+  }
+}
+
+
 function renderRiskList(topRisky) {
   const el = $('riskList');
   if (!topRisky.length) return;
@@ -756,12 +899,14 @@ function renderStats(stats, currentLat) {
 // ═══════════════════════════════════════════════════════
 function onPayload(payload) {
   $('tickDisplay').textContent = `TICK ${payload.tick}`;
+  $('pauseBtn').textContent = payload.paused ? 'Resume' : 'Pause';
 
   if (payload.sd_path) {
     $('sdPath').textContent = payload.sd_path;
   }
 
   renderBlocks(payload.blocks);
+  renderBuckets(payload.buckets, payload.bucket_pointers || {});
   renderRiskList(payload.top_risky);
   renderLog(payload.action_log);
 
@@ -852,6 +997,20 @@ function doInject() {
     ws.send(JSON.stringify({ type: 'inject', block: blkId, delay }));
   }
   $('modalOverlay').classList.remove('open');
+}
+
+function togglePause() {
+  if (ws && wsConnected) {
+    ws.send(JSON.stringify({ type: 'toggle_pause' }));
+  }
+}
+
+function resetSimulation() {
+  const ok = confirm('Reset the simulation? This clears block history, counters, buckets, and injected faults.');
+  if (!ok) return;
+  if (ws && wsConnected) {
+    ws.send(JSON.stringify({ type: 'reset' }));
+  }
 }
 </script>
 </body>
