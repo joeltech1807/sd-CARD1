@@ -1,0 +1,9 @@
+cd "c:\Users\JOEL\Downloads\sd CARD"
+python storage_backend.py --path G:\
+
+
+cd "c:\Users\JOEL\Downloads\sd CARD"
+python -m http.server 3000
+
+
+http://localhost:3000/storageguard_dashboard.html

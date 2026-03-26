@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>StorageGuard — SD Card Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+/* ── DESIGN TOKENS ──────────────────────────── */
+:root {
+  --bg:       #f5f7fa;
+  --surface:  #ffffff;
+  --border:   #e2e8f0;
+  --border2:  #cbd5e1;
+  --text:     #1e293b;
+  --muted:    #64748b;
+  --subtle:   #94a3b8;
+
+  --green:    #16a34a;
+  --green-bg: #dcfce7;
+  --yellow:   #d97706;
+  --yellow-bg:#fef3c7;
+  --red:      #dc2626;
+  --red-bg:   #fee2e2;
+  --blue:     #2563eb;
+  --blue-bg:  #dbeafe;
+
+  --font:     'Inter', sans-serif;
+  --mono:     'JetBrains Mono', monospace;
+
+  --radius:   8px;
+  --shadow:   0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.05);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── HEADER ─────────────────────────────────── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+}
+
+.logo {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 16px; font-weight: 700; color: var(--text);
+}
+.logo-icon {
+  width: 30px; height: 30px;
+  background: #1e40af;
+  border-radius: 7px;
+  display: grid; place-items: center;
+  color: #fff; font-size: 14px;
+}
+
+.header-right {
+  display: flex; align-items: center; gap: 16px;
+}
+
+/* connection badge */
+.conn-badge {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px; font-weight: 600;
+  font-family: var(--mono);
+  border: 1px solid transparent;
+  transition: all .2s;
+}
+.conn-badge.connected    { background: var(--green-bg);  color: var(--green);  border-color: #bbf7d0; }
+.conn-badge.disconnected { background: var(--red-bg);    color: var(--red);    border-color: #fecaca; }
+.conn-badge.connecting   { background: var(--yellow-bg); color: var(--yellow); border-color: #fde68a; }
+.conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor;
+}
+.conn-badge.connected .conn-dot { animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+.tick-label {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--muted);
+}
+
+/* controls */
+.ctrl-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.ctrl-group {
+  display: flex; align-items: center; gap: 6px;
+}
+.ctrl-label {
+  font-size: 11px; color: var(--muted); font-weight: 500;
+}
+select {
+  background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text); border-radius: 5px;
+  padding: 4px 8px; font-family: var(--mono); font-size: 11px;
+  cursor: pointer;
+}
+select:focus { outline: 2px solid #93c5fd; }
+input[type=range] {
+  width: 80px; accent-color: var(--blue);
+}
+.btn {
+  padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border2);
+  background: var(--surface); color: var(--text);
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: background .15s;
+}
+.btn:hover { background: var(--bg); }
+.btn-primary {
+  background: #1e40af; color: #fff; border-color: #1e40af;
+}
+.btn-primary:hover { background: #1d4ed8; }
+
+/* ── LAYOUT ─────────────────────────────────── */
+.page { padding: 20px; max-width: 1300px; margin: 0 auto; }
+
+/* SD card banner */
+.sd-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--blue-bg); border: 1px solid #bfdbfe;
+  border-radius: var(--radius); padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.sd-banner .sd-icon { font-size: 18px; }
+.sd-path { font-family: var(--mono); color: var(--blue); font-weight: 600; }
+.sd-banner .sd-note { color: var(--muted); }
+
+/* grid */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.card-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title {
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.card-sub {
+  font-size: 11px; color: var(--muted); font-family: var(--mono);
+}
+.card-body { padding: 16px; }
+
+/* ── STATS STRIP ─────────────────────────────── */
+.stats-row {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 12px; margin-bottom: 16px;
+}
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+.stat-val {
+  font-family: var(--mono); font-size: 24px; font-weight: 700;
+  color: var(--text); letter-spacing: -0.5px;
+}
+.stat-lbl { font-size: 11px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+.stat-trend { font-size: 11px; margin-top: 2px; }
+.stat-trend.good  { color: var(--green); }
+.stat-trend.warn  { color: var(--yellow); }
+.stat-trend.bad   { color: var(--red); }
+
+/* ── BLOCK GRID ──────────────────────────────── */
+.block-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+}
+.block {
+  aspect-ratio: 1;
+  border-radius: 5px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 9px;
+  cursor: pointer;
+  transition: transform .12s, box-shadow .12s;
+  border: 1px solid;
+  position: relative;
+}
+.block:hover { transform: scale(1.1); box-shadow: var(--shadow-md); z-index: 10; }
+.block-id   { opacity: .65; }
+.block-val  { font-size: 11px; font-weight: 600; margin-top: 1px; }
+
+.block.NORMAL   { background: #f0fdf4; border-color: #86efac; }
+.block.NORMAL .block-val { color: var(--green); }
+.block.ELEVATED { background: #fffbeb; border-color: #fcd34d; }
+.block.ELEVATED .block-val { color: var(--yellow); }
+.block.CRITICAL { background: #fef2f2; border-color: #fca5a5; animation: critPulse 1.2s ease-in-out infinite; }
+.block.CRITICAL .block-val { color: var(--red); }
+.block.AVOIDED  { background: #f8fafc; border-color: #e2e8f0; opacity: .55; }
+.block.AVOIDED .block-val  { color: var(--subtle); }
+
+@keyframes critPulse { 0%,100%{border-color:#fca5a5} 50%{border-color:#ef4444} }
+
+.legend {
+  display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.legend-dot  { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,.1); }
+
+/* ── PREDICTION PANEL ────────────────────────── */
+.risk-list { display: flex; flex-direction: column; gap: 8px; }
+.risk-item {
+  display: flex; align-items: center; gap: 8px;
+}
+.risk-blk  { font-family: var(--mono); font-size: 11px; width: 52px; color: var(--text); flex-shrink: 0; }
+.risk-bar-wrap { flex: 1; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.risk-bar  { height: 100%; border-radius: 3px; transition: width .4s ease; }
+.risk-pct  { font-family: var(--mono); font-size: 10px; color: var(--muted); width: 28px; text-align: right; }
+.risk-badge {
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
+  flex-shrink: 0;
+}
+.badge-NORMAL   { background: var(--green-bg);  color: var(--green); }
+.badge-ELEVATED { background: var(--yellow-bg); color: var(--yellow); }
+.badge-CRITICAL { background: var(--red-bg);    color: var(--red); }
+.badge-AVOIDED  { background: #f1f5f9;          color: var(--muted); }
+
+/* ── ACTION LOG ──────────────────────────────── */
+.log-box { max-height: 210px; overflow-y: auto; }
+.log-box::-webkit-scrollbar { width: 4px; }
+.log-box::-webkit-scrollbar-track { background: transparent; }
+.log-box::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.log-entry {
+  display: flex; gap: 10px; padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono); font-size: 10px;
+  animation: slideIn .25s ease;
+}
+.log-entry:last-child { border-bottom: none; }
+@keyframes slideIn { from { opacity:0; transform: translateY(-3px); } }
+.log-ts  { color: var(--subtle); white-space: nowrap; flex-shrink: 0; }
+.log-msg { color: var(--text); line-height: 1.5; }
+.log-msg.critical { color: var(--red); }
+.log-msg.elevated { color: var(--yellow); }
+.log-msg.recovery { color: var(--green); }
+
+/* ── LATENCY CHART ───────────────────────────── */
+#latency-canvas { width: 100% !important; }
+
+/* ── COMPARISON ──────────────────────────────── */
+.compare-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.compare-side {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px;
+}
+.compare-title {
+  font-size: 12px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .5px; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 6px;
+}
+.title-trad { color: var(--red); }
+.title-prop  { color: var(--green); }
+.metric-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-key { color: var(--muted); }
+.metric-val { font-family: var(--mono); font-weight: 600; }
+.val-bad  { color: var(--red); }
+.val-good { color: var(--green); }
+.val-blue { color: var(--blue); }
+
+.lat-bar-wrap { margin-top: 10px; }
+.lat-bar-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+.lat-track {
+  height: 6px; background: var(--border);
+  border-radius: 3px; overflow: hidden;
+}
+.lat-fill-trad { height: 100%; border-radius: 3px; background: #fca5a5; transition: width .5s; }
+.lat-fill-prop { height: 100%; border-radius: 3px; background: #86efac; transition: width .5s; }
+
+.verdict {
+  grid-column: 1/-1;
+  background: var(--blue-bg); border: 1px solid #bfdbfe;
+  border-radius: var(--radius); padding: 12px 16px;
+  font-size: 12px; color: var(--text); line-height: 1.6;
+}
+.verdict strong { color: var(--blue); }
+
+/* ── TOOLTIP ─────────────────────────────────── */
+.tooltip {
+  position: fixed; z-index: 9999;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 12px; box-shadow: var(--shadow-md);
+  font-family: var(--mono); font-size: 11px;
+  pointer-events: none; opacity: 0; transition: opacity .15s;
+  max-width: 200px; line-height: 1.7; color: var(--text);
+}
+.tooltip.show { opacity: 1; }
+.tooltip b { color: var(--blue); }
+
+/* ── MODAL ───────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 8000;
+  background: rgba(0,0,0,.35); backdrop-filter: blur(3px);
+  display: none; place-items: center;
+}
+.modal-overlay.open { display: grid; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 24px; width: 340px;
+  box-shadow: var(--shadow-md);
+}
+.modal h3 { font-size: 14px; font-weight: 700; margin-bottom: 16px; color: var(--text); }
+.modal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; font-weight: 500; }
+.modal input[type=number], .modal select {
+  width: 100%; padding: 7px 10px; border-radius: 5px;
+  border: 1px solid var(--border2); background: var(--bg);
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+}
+.modal-btns { display: flex; gap: 8px; margin-top: 18px; }
+
+/* ── OFFLINE MESSAGE ─────────────────────────── */
+.offline-notice {
+  display: none;
+  background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: var(--radius); padding: 12px 16px;
+  margin-bottom: 16px; font-size: 12px; color: var(--yellow);
+  font-weight: 500;
+}
+.offline-notice.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">💾</div>
+    StorageGuard
+    <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:2px;">SD Card Monitor</span>
+  </div>
+
+  <div class="header-right">
+    <span class="tick-label" id="tickDisplay">TICK —</span>
+    <span class="conn-badge connecting" id="connBadge">
+      <span class="conn-dot"></span>
+      <span id="connText">Connecting…</span>
+    </span>
+    <div class="ctrl-row">
+      <div class="ctrl-group">
+        <span class="ctrl-label">Mode</span>
+        <select id="modeSelect">
+          <option value="mixed">Mixed</option>
+          <option value="random">Random</option>
+          <option value="sequential">Sequential</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Intensity</span>
+        <input type="range" id="intensitySlider" min="1" max="10" value="5">
+        <span id="intensityVal" class="ctrl-label">5</span>
+      </div>
+      <button class="btn btn-primary" onclick="openModal()">+ Inject Fault</button>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+
+  <!-- SD Card Banner -->
+  <div class="sd-banner" id="sdBanner">
+    <span class="sd-icon">💾</span>
+    <div>
+      <div><strong>SD Card Path:</strong> <span class="sd-path" id="sdPath">Detecting…</span></div>
+      <div class="sd-note">Real I/O latency is being measured by writing and reading 64 KB blocks to this device.</div>
+    </div>
+  </div>
+
+  <!-- Offline notice -->
+  <div class="offline-notice" id="offlineNotice">
+    ⚠ Backend not connected — make sure <code>storage_backend.py</code> is running. Auto-retrying…
+  </div>
+
+  <!-- Stats Strip -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-val" id="statWrites">—</div>
+      <div class="stat-lbl">Total Writes</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statReads">—</div>
+      <div class="stat-lbl">Total Reads</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statAvoided">—</div>
+      <div class="stat-lbl">Avoided Blocks</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statLatency">— ms</div>
+      <div class="stat-lbl">Current Latency</div>
+    </div>
+  </div>
+
+  <!-- Main 2-column grid -->
+  <div class="grid-2">
+
+    <!-- Left: Block Grid -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Block Health Map</span>
+        <span class="card-sub">32 blocks · 64 KB each · real SD card I/O</span>
+      </div>
+      <div class="card-body">
+        <div class="block-grid" id="blockGrid"></div>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#f0fdf4;border-color:#86efac"></div>Healthy</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#fffbeb;border-color:#fcd34d"></div>Elevated</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#fef2f2;border-color:#fca5a5"></div>Critical</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#f8fafc;border-color:#e2e8f0"></div>Avoided</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right column -->
+    <div style="display:flex;flex-direction:column;gap:14px;">
+
+      <!-- Risk Ranking -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Risk Ranking</span>
+          <span class="card-sub">Top 5 blocks</span>
+        </div>
+        <div class="card-body">
+          <div class="risk-list" id="riskList">
+            <div style="color:var(--muted);font-size:11px;">Waiting for data…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Log -->
+      <div class="card" style="flex:1">
+        <div class="card-header">
+          <span class="card-title">Event Log</span>
+        </div>
+        <div class="card-body" style="padding:10px 16px;">
+          <div class="log-box" id="actionLog">
+            <div class="log-entry">
+              <span class="log-ts">—</span>
+              <span class="log-msg">Waiting for events…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Latency Chart -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-header">
+      <span class="card-title">Real-Time Latency</span>
+      <span class="card-sub" id="latDisplay">— ms</span>
+    </div>
+    <div class="card-body" style="padding:10px 16px;">
+      <canvas id="latency-canvas" height="110"></canvas>
+    </div>
+  </div>
+
+  <!-- Comparison -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Performance Comparison</span>
+      <span class="card-sub">Traditional (reactive) vs Predictive (proactive)</span>
+    </div>
+    <div class="card-body">
+      <div class="compare-grid">
+        <div class="compare-side">
+          <div class="compare-title title-trad">⚠ Traditional — Reactive</div>
+          <div class="metric-row"><span class="metric-key">Avg Latency</span><span class="metric-val val-bad" id="tradLat">—</span></div>
+          <div class="metric-row"><span class="metric-key">Total Writes</span><span class="metric-val" id="tradWrites">—</span></div>
+          <div class="metric-row"><span class="metric-key">Avoided Blocks</span><span class="metric-val">0</span></div>
+          <div class="metric-row"><span class="metric-key">Strategy</span><span class="metric-val" style="font-size:10px;color:var(--muted)">React after failure</span></div>
+          <div class="lat-bar-wrap">
+            <div class="lat-bar-label">Latency overhead</div>
+            <div class="lat-track"><div class="lat-fill-trad" id="tradBar" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="compare-side">
+          <div class="compare-title title-prop">✓ Predictive — Proactive</div>
+          <div class="metric-row"><span class="metric-key">Avg Latency</span><span class="metric-val val-good" id="propLat">—</span></div>
+          <div class="metric-row"><span class="metric-key">Redirected Writes</span><span class="metric-val val-good" id="propRedir">—</span></div>
+          <div class="metric-row"><span class="metric-key">Avoided Blocks</span><span class="metric-val val-good" id="propAvoided">—</span></div>
+          <div class="metric-row"><span class="metric-key">Strategy</span><span class="metric-val" style="font-size:10px;color:var(--green)">Predict &amp; avoid</span></div>
+          <div class="lat-bar-wrap">
+            <div class="lat-bar-label">Latency overhead</div>
+            <div class="lat-track"><div class="lat-fill-prop" id="propBar" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="verdict">
+          <span id="verdictText">Collecting data — the predictive engine will demonstrate latency savings once degradation patterns emerge from the SD card measurements.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /page -->
+
+<!-- TOOLTIP -->
+<div class="tooltip" id="tooltip"></div>
+
+<!-- INJECT MODAL -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal">
+    <h3>Inject Controlled Fault</h3>
+    <label>Block ID (0 – 31)</label>
+    <input type="number" id="injectBlock" min="0" max="31" value="5">
+    <label>Extra Delay (ms)</label>
+    <input type="number" id="injectDelay" min="10" max="500" value="60">
+    <div class="modal-btns">
+      <button class="btn btn-primary" onclick="doInject()">Inject</button>
+      <button class="btn" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  CHART SETUP
+// ═══════════════════════════════════════════════════════
+const ctx = document.getElementById('latency-canvas').getContext('2d');
+const MAX_PTS = 80;
+const latData = {
+  labels: [],
+  datasets: [
+    {
+      label: 'Latency (ms)',
+      data: [],
+      borderColor: '#2563eb',
+      backgroundColor: 'rgba(37,99,235,0.08)',
+      fill: true,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.35,
+    },
+    {
+      label: 'Rolling Avg',
+      data: [],
+      borderColor: 'rgba(16,163,74,0.7)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.5,
+      fill: false,
+      borderDash: [4, 3],
+    }
+  ]
+};
+
+const latChart = new Chart(ctx, {
+  type: 'line',
+  data: latData,
+  options: {
+    responsive: true,
+    animation: { duration: 0 },
+    interaction: { intersect: false },
+    scales: {
+      x: { display: false },
+      y: {
+        min: 0,
+        grid: { color: '#f1f5f9' },
+        ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono', size: 10 } }
+      }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#fff',
+        borderColor: '#e2e8f0',
+        borderWidth: 1,
+        titleColor: '#1e293b',
+        bodyColor: '#64748b',
+        titleFont: { family: 'JetBrains Mono', size: 11 },
+        bodyFont: { family: 'JetBrains Mono', size: 11 },
+      }
+    }
+  }
+});
+
+let latWindow = [];
+function updateChart(series) {
+  series.forEach(v => {
+    latWindow.push(v);
+    if (latWindow.length > MAX_PTS) latWindow.shift();
+    if (latData.labels.length >= MAX_PTS) {
+      latData.labels.shift();
+      latData.datasets[0].data.shift();
+      latData.datasets[1].data.shift();
+    }
+    latData.labels.push('');
+    latData.datasets[0].data.push(v);
+    const w = latWindow.slice(-10);
+    latData.datasets[1].data.push(w.reduce((a, b) => a + b, 0) / w.length);
+  });
+  latChart.update('none');
+}
+
+// ═══════════════════════════════════════════════════════
+//  DOM HELPERS
+// ═══════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const tooltip = $('tooltip');
+
+// Build block grid
+const gridEl = $('blockGrid');
+for (let i = 0; i < 32; i++) {
+  const el = document.createElement('div');
+  el.className = 'block NORMAL';
+  el.id = `blk-${i}`;
+  el.innerHTML = `<div class="block-id">#${i}</div><div class="block-val">—</div>`;
+  el.addEventListener('mousemove', e => showTooltip(e, i));
+  el.addEventListener('mouseleave', () => tooltip.classList.remove('show'));
+  gridEl.appendChild(el);
+}
+
+// Per-block state cache for tooltip
+const blockCache = {};
+
+function showTooltip(e, id) {
+  const b = blockCache[id];
+  if (!b) return;
+  tooltip.innerHTML = `
+    <b>Block ${id}</b><br>
+    Classification: ${b.cls}<br>
+    Risk score: ${(b.risk * 100).toFixed(1)}%<br>
+    Avg latency: ${b.avg_lat.toFixed(1)} ms<br>
+    Trend: ${b.trend >= 0 ? '+' : ''}${(b.trend * 100).toFixed(0)}%<br>
+    Accesses: ${b.access}
+    ${b.injected ? '<br><span style="color:#d97706">⚠ Fault injected</span>' : ''}
+    ${b.avoided  ? '<br><span style="color:#dc2626">● Writes redirected</span>' : ''}
+  `;
+  tooltip.style.left = (e.clientX + 14) + 'px';
+  tooltip.style.top  = (e.clientY - 10) + 'px';
+  tooltip.classList.add('show');
+}
+
+function renderBlocks(blocks) {
+  blocks.forEach(b => {
+    blockCache[b.id] = b;
+    const el = $(`blk-${b.id}`);
+    if (!el) return;
+    el.className = `block ${b.cls}`;
+    if (b.injected) el.style.outline = '2px solid #f59e0b';
+    else el.style.outline = '';
+    const valEl = el.querySelector('.block-val');
+    valEl.textContent = b.avg_lat > 0 ? b.avg_lat.toFixed(0) + '' : '—';
+  });
+}
+
+function renderRiskList(topRisky) {
+  const el = $('riskList');
+  if (!topRisky.length) return;
+  el.innerHTML = topRisky.map(r => {
+    const pct = Math.round(r.risk_score * 100);
+    const barColor = r.risk_score >= 0.70 ? '#ef4444'
+                   : r.risk_score >= 0.40 ? '#f59e0b' : '#22c55e';
+    return `
+      <div class="risk-item">
+        <span class="risk-blk">Block ${r.block_id}</span>
+        <div class="risk-bar-wrap">
+          <div class="risk-bar" style="width:${pct}%;background:${barColor}"></div>
+        </div>
+        <span class="risk-pct">${pct}%</span>
+        <span class="risk-badge badge-${r.classification}">${r.classification}</span>
+      </div>`;
+  }).join('');
+}
+
+function renderLog(logs) {
+  if (!logs || !logs.length) return;
+  const el = $('actionLog');
+  el.innerHTML = logs.map(l => {
+    const isCrit = /CRITICAL|🔴/.test(l.msg);
+    const isEl   = /elevated|🟡/.test(l.msg);
+    const isRec  = /recover|✅/.test(l.msg);
+    const cls = isCrit ? 'critical' : isEl ? 'elevated' : isRec ? 'recovery' : '';
+    const ts = typeof l.ts === 'number'
+      ? new Date(l.ts * 1000).toLocaleTimeString('en-US', { hour12: false })
+      : l.ts;
+    return `<div class="log-entry"><span class="log-ts">${ts}</span><span class="log-msg ${cls}">${l.msg}</span></div>`;
+  }).join('');
+}
+
+function renderStats(stats, currentLat) {
+  $('statWrites').textContent  = stats.total_writes.toLocaleString();
+  $('statReads').textContent   = stats.total_reads.toLocaleString();
+  $('statAvoided').textContent = stats.avoided_blocks;
+  $('statLatency').textContent = currentLat ? currentLat.toFixed(1) + ' ms' : '— ms';
+
+  $('tradLat').textContent   = stats.trad_avg_lat.toFixed(2) + ' ms';
+  $('propLat').textContent   = stats.prop_avg_lat.toFixed(2) + ' ms';
+  $('tradWrites').textContent = stats.total_writes;
+  $('propRedir').textContent  = stats.avoided_writes;
+  $('propAvoided').textContent= stats.avoided_blocks;
+
+  const tradPct = Math.min(stats.trad_avg_lat / 80 * 100, 100);
+  const propPct = Math.min(stats.prop_avg_lat / 80 * 100, 100);
+  $('tradBar').style.width = tradPct + '%';
+  $('propBar').style.width = propPct + '%';
+
+  const saved = stats.trad_avg_lat - stats.prop_avg_lat;
+  const pct = stats.trad_avg_lat > 0 ? (saved / stats.trad_avg_lat * 100) : 0;
+  const verdict = $('verdictText');
+  if (saved > 0.5) {
+    verdict.innerHTML = `<strong>Predictive system saves ${saved.toFixed(1)} ms per operation (${pct.toFixed(0)}% faster)</strong> by redirecting writes away from ${stats.avoided_blocks} degraded block(s) before failure occurs. Traditional storage continues absorbing high-latency operations.`;
+  } else if (stats.total_writes + stats.total_reads < 30) {
+    verdict.textContent = 'Warming up — collecting initial I/O samples from SD card. Fault injection begins shortly.';
+  } else {
+    verdict.innerHTML = '<strong>Systems are comparable</strong> — no significant degradation detected yet. Controlled fault injection will demonstrate the performance gap.';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAIN RENDER
+// ═══════════════════════════════════════════════════════
+function onPayload(payload) {
+  $('tickDisplay').textContent = `TICK ${payload.tick}`;
+
+  if (payload.sd_path) {
+    $('sdPath').textContent = payload.sd_path;
+  }
+
+  renderBlocks(payload.blocks);
+  renderRiskList(payload.top_risky);
+  renderLog(payload.action_log);
+
+  let currentLat = null;
+  if (payload.latency_series && payload.latency_series.length) {
+    const recent = payload.latency_series.slice(-5);
+    updateChart(recent);
+    currentLat = recent[recent.length - 1];
+    $('latDisplay').textContent = `${currentLat ? currentLat.toFixed(1) : '—'} ms`;
+  }
+
+  renderStats(payload.stats, currentLat);
+}
+
+// ═══════════════════════════════════════════════════════
+//  WEBSOCKET — real backend only, no simulation fallback
+// ═══════════════════════════════════════════════════════
+let ws = null;
+let wsConnected = false;
+let retryTimer = null;
+
+function setBadge(state) {
+  const badge = $('connBadge');
+  const text  = $('connText');
+  badge.className = `conn-badge ${state}`;
+  const labels = { connected: 'Live — SD Card', disconnected: 'Disconnected', connecting: 'Connecting…' };
+  text.textContent = labels[state] || state;
+  $('offlineNotice').classList.toggle('show', state !== 'connected');
+}
+
+function connect() {
+  setBadge('connecting');
+  try {
+    ws = new WebSocket('ws://localhost:8765');
+
+    ws.onopen = () => {
+      wsConnected = true;
+      setBadge('connected');
+      if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+    };
+
+    ws.onmessage = e => {
+      try { onPayload(JSON.parse(e.data)); }
+      catch (err) { console.error('Parse error:', err); }
+    };
+
+    ws.onclose = ws.onerror = () => {
+      wsConnected = false;
+      setBadge('disconnected');
+      ws = null;
+      // retry every 3 seconds
+      if (!retryTimer) {
+        retryTimer = setInterval(() => {
+          if (!wsConnected) connect();
+        }, 3000);
+      }
+    };
+  } catch (e) {
+    setBadge('disconnected');
+  }
+}
+
+connect();
+
+// ═══════════════════════════════════════════════════════
+//  CONTROLS
+// ═══════════════════════════════════════════════════════
+$('modeSelect').addEventListener('change', e => {
+  if (ws && wsConnected) ws.send(JSON.stringify({ type: 'set_mode', value: e.target.value }));
+});
+
+$('intensitySlider').addEventListener('input', e => {
+  $('intensityVal').textContent = e.target.value;
+  if (ws && wsConnected) ws.send(JSON.stringify({ type: 'set_intensity', value: e.target.value / 10 }));
+});
+
+function openModal()  { $('modalOverlay').classList.add('open'); }
+function closeModal(e) {
+  if (!e || e.target === $('modalOverlay') || !e.target.closest('.modal')) {
+    $('modalOverlay').classList.remove('open');
+  }
+}
+function doInject() {
+  const blkId = parseInt($('injectBlock').value);
+  const delay  = parseFloat($('injectDelay').value);
+  if (isNaN(blkId) || isNaN(delay)) return;
+  if (ws && wsConnected) {
+    ws.send(JSON.stringify({ type: 'inject', block: blkId, delay }));
+  }
+  $('modalOverlay').classList.remove('open');
+}
+</script>
+</body>
+</html>
