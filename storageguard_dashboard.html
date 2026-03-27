@@ -245,18 +245,7 @@ input[type=range] {
   font-size: 10px;
   color: var(--muted);
 }
-.sim-text-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 10px;
-}
-.sim-text-note {
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.5;
-}
+
 .sim-speed-stack {
   display: flex;
   flex-direction: column;
@@ -327,13 +316,6 @@ input[type=range] {
   box-shadow: 0 12px 24px rgba(37,99,235,.12);
   border-color: #93c5fd;
 }
-.bucket-node.lookup {
-  border-color: #4ade80;
-  box-shadow: 0 12px 24px rgba(34,197,94,.14);
-}
-.bucket-node.lookup .bucket-node-meta {
-  color: #15803d;
-}
 .bucket-node.HEALTHY { border-top: 4px solid var(--green); }
 .bucket-node.WEAK { border-top: 4px solid var(--yellow); }
 .bucket-node.CRITICAL { border-top: 4px solid var(--red); }
@@ -355,19 +337,10 @@ input[type=range] {
   font-size: 10px;
   color: var(--muted);
 }
-.bucket-node-meta {
-  margin-bottom: 10px;
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-}
 .bucket-orbit {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  max-height: 116px;
-  overflow-y: auto;
-  padding-right: 4px;
 }
 .orbit-block {
   min-width: 30px;
@@ -383,18 +356,13 @@ input[type=range] {
   color: var(--text);
   transition: transform .28s ease, border-color .28s ease, background .28s ease, opacity .28s ease;
 }
-.orbit-block.inactive { opacity: .45; }
-.orbit-block.pointer-current {
-  border-color: #2563eb;
+.orbit-block.dim { opacity: .4; }
+.orbit-block.scan {
+  transform: translateY(-2px) scale(1.06);
+  border-color: #60a5fa;
   background: #dbeafe;
-  color: #1e3a8a;
 }
-.orbit-block.pointer-next {
-  border-color: #16a34a;
-  background: #dcfce7;
-  color: #166534;
-}
-.orbit-block.selected {
+.orbit-block.chosen {
   transform: scale(1.1);
   border-color: #1d4ed8;
   background: #bfdbfe;
@@ -502,25 +470,22 @@ input[type=range] {
 }
 .sim-complexity {
   position: absolute;
-  top: 20px;
-  right: 20px;
-  padding: 12px 18px;
+  top: 18px;
+  right: 18px;
+  padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid #bfdbfe;
   background: rgba(255,255,255,.94);
   font-family: var(--mono);
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 10px;
   color: #1d4ed8;
   opacity: 0;
-  transform: translateY(-10px) scale(.94);
+  transform: translateY(-6px);
   transition: opacity .35s ease, transform .35s ease;
-  box-shadow: 0 12px 24px rgba(37, 99, 235, .16);
-  z-index: 4;
 }
 .sim-complexity.show {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: translateY(0);
 }
 .sim-caption {
   padding: 0 20px 20px;
@@ -718,9 +683,6 @@ input[type=range] {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  max-height: 122px;
-  overflow-y: auto;
-  padding-right: 4px;
 }
 .bucket-pill {
   font-family: var(--mono);
@@ -1094,10 +1056,6 @@ input[type=range] {
           <span id="simByteCount">0 bytes</span>
           <span id="simByteLimit">limit 65536 bytes</span>
         </div>
-        <label class="sim-form-label" for="simReadBlockSelect" id="simReadBlockLabel" style="display:none; margin-top:12px;">Read Block</label>
-        <select id="simReadBlockSelect" style="display:none;">
-          <option value="">Choose a block</option>
-        </select>
         <div class="sim-text-actions">
           <div class="sim-text-note" id="simActionHint">Enter text, then send it to the write process.</div>
           <button class="btn btn-primary" id="simSendBtn" onclick="startSimulation()">Send To Process</button>
@@ -1106,7 +1064,7 @@ input[type=range] {
       <div class="sim-speed-card">
         <div class="sim-speed-stack">
           <label class="sim-form-label" for="simSpeedSlider">Animation Speed</label>
-          <input type="range" id="simSpeedSlider" min="1" max="15" value="6">
+          <input type="range" id="simSpeedSlider" min="1" max="9" value="5">
           <div class="sim-input-meta">
             <span id="simSpeedLabel">Normal</span>
             <span id="simSpeedMs">1.00x</span>
@@ -1305,11 +1263,6 @@ function showTooltip(e, id) {
     State: ${b.state}<br>
     Bucket: ${b.bucket}<br>
     Risk score: ${(b.risk * 100).toFixed(1)}%<br>
-    Health score: ${b.health_score.toFixed(1)}<br>
-    Wear: ${(b.wear_component * 100).toFixed(1)}%<br>
-    Error rate: ${(b.error_rate * 100).toFixed(1)}%<br>
-    ECC correction rate: ${(b.ecc_correction_rate * 100).toFixed(1)}%<br>
-    WAF: ${b.waf.toFixed(2)}<br>
     Write count: ${b.write_count}<br>
     Error count: ${b.error_count}<br>
     Latency: ${b.latency.toFixed(2)} ms<br>
@@ -1349,10 +1302,12 @@ function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = '
   grid.innerHTML = order.map(name => {
     const blocks = buckets && buckets[name] ? buckets[name] : [];
     const pointer = Number.isInteger(pointers[name]) ? pointers[name] : 0;
-    const pills = blocks.map((id, idx) => {
+    const displayCount = Math.min(blocks.length, 12);
+    const pills = blocks.slice(0, displayCount).map((id, idx) => {
       const cls = blocks.length > 0 && idx === (pointer % blocks.length) ? 'bucket-pill pointer' : 'bucket-pill';
       return `<span class="${cls}">#${id}</span>`;
     }).join('');
+    const overflow = blocks.length > displayCount ? `<span class="bucket-pill">+${blocks.length - displayCount}</span>` : "";
     return `
       <div class="bucket-card ${name}">
         <div class="bucket-row">
@@ -1361,6 +1316,7 @@ function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = '
         </div>
         <div class="bucket-pills">
           ${pills || '<div class="bucket-empty">No blocks</div>'}
+          ${overflow}
         </div>
       </div>`;
   }).join('');
@@ -1381,16 +1337,11 @@ function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = '
 let latestPayload = null;
 let simEvent = null;
 let simStageIndex = -1;
+let simRotateIndex = -1;
 let simTimer = null;
 let simPending = false;
 let lastManualEventId = null;
 let simSnapshot = null;
-
-function getBlockSizeLimit() {
-  return latestPayload && Number.isInteger(latestPayload.block_size_bytes)
-    ? latestPayload.block_size_bytes
-    : 262144;
-}
 
 function getUtf8Size(text) {
   return new TextEncoder().encode(text).length;
@@ -1398,55 +1349,30 @@ function getUtf8Size(text) {
 
 function updateSimByteCount() {
   const bytes = getUtf8Size($('simWriteText').value);
-  const limit = getBlockSizeLimit();
   $('simByteCount').textContent = `${bytes} bytes`;
-  $('simByteLimit').textContent = `limit ${limit} bytes`;
-  $('simByteCount').style.color = bytes > limit ? '#dc2626' : '';
+  $('simByteCount').style.color = bytes > 65536 ? '#dc2626' : '';
 }
 
 function getSpeedProfile() {
   const profiles = {
-    1: { label: 'Freeze', factor: 0.10, base: 5400 },
-    2: { label: 'Very Slow', factor: 0.18, base: 4200 },
-    3: { label: 'Slow', factor: 0.28, base: 3400 },
-    4: { label: 'Calm', factor: 0.42, base: 2700 },
-    5: { label: 'Measured', factor: 0.60, base: 2100 },
-    6: { label: 'Normal', factor: 1.00, base: 1500 },
-    7: { label: 'Steady', factor: 1.20, base: 1250 },
-    8: { label: 'Brisk', factor: 1.45, base: 1060 },
-    9: { label: 'Quick', factor: 1.75, base: 900 },
-    10: { label: 'Fast', factor: 2.10, base: 760 },
-    11: { label: 'Very Fast', factor: 2.50, base: 620 },
-    12: { label: 'Rapid', factor: 3.00, base: 500 },
-    13: { label: 'Swift', factor: 3.50, base: 400 },
-    14: { label: 'Turbo', factor: 4.00, base: 300 },
-    15: { label: 'Instant', factor: 5.00, base: 220 },
+    1: { label: 'Very Slow', factor: 0.28, base: 3200, rotate: 900 },
+    2: { label: 'Slow', factor: 0.45, base: 2400, rotate: 700 },
+    3: { label: 'Calm', factor: 0.65, base: 1900, rotate: 560 },
+    4: { label: 'Measured', factor: 0.85, base: 1550, rotate: 440 },
+    5: { label: 'Normal', factor: 1.00, base: 1250, rotate: 320 },
+    6: { label: 'Brisk', factor: 1.25, base: 980, rotate: 250 },
+    7: { label: 'Fast', factor: 1.6, base: 760, rotate: 190 },
+    8: { label: 'Very Fast', factor: 2.1, base: 560, rotate: 140 },
+    9: { label: 'Rapid', factor: 2.8, base: 420, rotate: 100 },
   };
   const value = parseInt($('simSpeedSlider').value, 10);
-  return profiles[value] || profiles[6];
+  return profiles[value] || profiles[5];
 }
 
 function updateSimSpeedLabel() {
   const profile = getSpeedProfile();
   $('simSpeedLabel').textContent = profile.label;
   $('simSpeedMs').textContent = `${profile.factor.toFixed(2)}x`;
-}
-
-function renderReadBlockOptions(blocks = []) {
-  const select = $('simReadBlockSelect');
-  if (!select) return;
-  const previous = select.value;
-  const options = ['<option value="">Choose a block</option>'].concat(
-    blocks.map(block => {
-      const disabled = block.state === 'RETIRED' ? ' disabled' : '';
-      const label = `#${block.id} | ${block.state} | writes ${block.write_count}`;
-      return `<option value="${block.id}"${disabled}>${label}</option>`;
-    })
-  );
-  select.innerHTML = options.join('');
-  if ([...select.options].some(option => option.value === previous && !option.disabled)) {
-    select.value = previous;
-  }
 }
 
 function resetSimulationView(message = 'Simulation idle.') {
@@ -1461,8 +1387,6 @@ function resetSimulationView(message = 'Simulation idle.') {
   $('simComplexity').classList.remove('show');
   simPending = false;
   simSnapshot = null;
-  $('simSendBtn').textContent = $('simOpSelect').value !== 'READ' ? 'Send To Process' : 'Run Read Process';
-  $('simStartBtn').textContent = 'Start Simulation';
 }
 
 function stopSimulationTimer() {
@@ -1482,15 +1406,6 @@ function pickSimulationEvent(payload) {
 
 function renderSimBlockFocus(block, event) {
   const el = $('simBlockDetail');
-  if (event && event.block_id === null) {
-    el.innerHTML = `
-      <div class="sim-metric"><span class="key">status</span><span class="val">${event.status}</span></div>
-      <div class="sim-metric"><span class="key">bucket path</span><span class="val">${event.bucket_state_path || 'N/A'}</span></div>
-      <div class="sim-metric"><span class="key">write limit</span><span class="val">${getBlockSizeLimit()} bytes</span></div>
-      <div class="sim-metric"><span class="key">message</span><span class="val">No selectable HEALTHY, WEAK, or CRITICAL block.</span></div>
-    `;
-    return;
-  }
   if (!block) {
     el.innerHTML = '<div class="event-empty">Start the simulation to animate one read or write path.</div>';
     return;
@@ -1502,67 +1417,37 @@ function renderSimBlockFocus(block, event) {
     <div class="sim-metric"><span class="key">write_count</span><span class="val">${block.write_count}</span></div>
     <div class="sim-metric"><span class="key">error_count</span><span class="val">${block.error_count}</span></div>
     <div class="sim-metric"><span class="key">latency</span><span class="val">${block.latency.toFixed(2)} ms</span></div>
-    <div class="sim-metric"><span class="key">wear</span><span class="val">${(block.wear_component * 100).toFixed(1)}%</span></div>
-    <div class="sim-metric"><span class="key">error rate</span><span class="val">${(block.error_rate * 100).toFixed(1)}%</span></div>
-    <div class="sim-metric"><span class="key">health</span><span class="val">${block.health_score.toFixed(1)}</span></div>
-    <div class="sim-metric"><span class="key">waf</span><span class="val">${block.waf.toFixed(2)}</span></div>
     <div class="sim-metric"><span class="key">ecc</span><span class="val">${block.last_ecc_status}</span></div>
-    <div class="sim-metric"><span class="key">ecc stage</span><span class="val">${event && event.ecc_stage_used ? event.ecc_stage_used : 'N/A'}</span></div>
-    <div class="sim-metric"><span class="key">verification</span><span class="val">${event && typeof event.verification_passed === 'boolean' ? (event.verification_passed ? 'passed' : 'not required / failed') : 'N/A'}</span></div>
     <div class="sim-metric"><span class="key">intelligence</span><span class="val">${block.last_intelligence_triggered ? 'triggered' : 'idle'}</span></div>
     <div class="sim-metric"><span class="key">selected op</span><span class="val">${event ? event.operation : 'N/A'}</span></div>
-    <div class="sim-metric"><span class="key">bucket path</span><span class="val">${event && event.bucket_state_path ? event.bucket_state_path : 'N/A'}</span></div>
-    <div class="sim-metric"><span class="key">write limit</span><span class="val">${getBlockSizeLimit()} bytes</span></div>
-    <div class="sim-metric"><span class="key">metadata source</span><span class="val">runtime counters + bucket_state.json</span></div>
     <div class="sim-metric"><span class="key">data</span><span class="val">${event && event.text_preview ? event.text_preview : 'N/A'}</span></div>
   `;
 }
 
-function renderSimBucketDiagram(payload, event, stageIndex) {
+function renderSimBucketDiagram(payload, event, stageIndex, rotateIndex) {
   const order = ['HEALTHY', 'WEAK', 'CRITICAL', 'RETIRED'];
   const buckets = payload && payload.buckets ? payload.buckets : {};
-  const defaultPointers = payload && payload.bucket_pointers ? payload.bucket_pointers : {};
-  const showAfter = stageIndex >= 2;
-  const showLookup = stageIndex === 1;
-  const bucketSnapshot = event && (showAfter ? event.bucket_snapshot_after : event.bucket_snapshot_before)
-    ? (showAfter ? event.bucket_snapshot_after : event.bucket_snapshot_before)
-    : buckets;
-  const pointerSnapshot = event && (showAfter ? event.pointer_snapshot_after : event.pointer_snapshot_before)
-    ? (showAfter ? event.pointer_snapshot_after : event.pointer_snapshot_before)
-    : defaultPointers;
-  const chosenBucketAfter = event && event.block_id !== null
-    ? order.find(name => (event.bucket_snapshot_after && event.bucket_snapshot_after[name] || []).includes(event.block_id))
-    : null;
-  const highlightedBucket = showAfter && chosenBucketAfter ? chosenBucketAfter : event ? event.bucket : null;
   const grid = $('simBucketDiagram');
   if (!grid) return;
 
   grid.innerHTML = order.map(name => {
-    const arr = bucketSnapshot && bucketSnapshot[name] ? bucketSnapshot[name] : [];
-    const hasPointer = name !== 'RETIRED' && pointerSnapshot && Number.isInteger(pointerSnapshot[name]);
-    const rawPointer = hasPointer ? pointerSnapshot[name] : 0;
-    const pointer = hasPointer && arr.length ? (rawPointer % arr.length) : 0;
-    const pointerId = hasPointer && arr.length ? arr[pointer] : null;
-    const active = highlightedBucket && name === highlightedBucket;
-    const lookup = showLookup && event && name === event.bucket;
+    const arr = buckets[name] || [];
+    const pointer = payload && payload.bucket_pointers && Number.isInteger(payload.bucket_pointers[name]) ? payload.bucket_pointers[name] : 0;
+    const active = event && name === event.bucket;
     const chosenId = event ? event.block_id : null;
-    const orbit = arr.map((id, idx) => {
+    const orbit = arr.slice(0, 10).map((id, idx) => {
       let cls = 'orbit-block';
-      if (pointerId !== null && idx === pointer) cls += showAfter ? ' pointer-next' : ' pointer-current';
-      if (chosenId !== null && id === chosenId) cls += ' selected';
-      if (active && chosenId !== null && id !== chosenId && id !== pointerId) cls += ' inactive';
+      if (active && stageIndex === 0 && idx === rotateIndex) cls += ' scan';
+      if (active && stageIndex >= 1 && id === chosenId) cls += ' chosen';
+      if (active && stageIndex >= 1 && id !== chosenId) cls += ' dim';
       return `<span class="${cls}">#${id}</span>`;
     }).join('');
-    const pointerText = hasPointer ? (arr.length ? `p=${pointer} -> #${pointerId}` : 'p=0') : 'not in round robin';
-    const phaseText = showAfter ? 'stored after op' : 'stored before op';
-    const nodeCount = `${arr.length} blocks`;
     return `
-      <div class="bucket-node ${name} ${active ? 'active' : ''} ${lookup ? 'lookup' : ''}">
+      <div class="bucket-node ${name} ${active ? 'active' : ''}">
         <div class="bucket-node-head">
           <span class="bucket-node-name">${name}</span>
-          <span class="bucket-node-count">${nodeCount}</span>
+          <span class="bucket-node-count">${arr.length} | p=${pointer}</span>
         </div>
-        <div class="bucket-node-meta">${phaseText} | ${pointerText}</div>
         <div class="bucket-orbit">${orbit || '<span class="event-empty">empty</span>'}</div>
       </div>
     `;
@@ -1590,28 +1475,28 @@ function renderProcessRail(event, stageIndex) {
 function renderSimulationFrame() {
   const payload = simSnapshot || latestPayload;
   const event = simEvent;
-  const block = event && event.block_id !== null && payload ? (payload.blocks || []).find(b => b.id === event.block_id) : null;
+  const block = event && payload ? (payload.blocks || []).find(b => b.id === event.block_id) : null;
   const activeStep = event && simStageIndex >= 0 ? event.steps[Math.min(simStageIndex, event.steps.length - 1)] : null;
 
   $('simOp').textContent = event ? event.operation : '?';
-  $('simBlock').textContent = event && event.block_id !== null ? `#${event.block_id}` : 'N/A';
+  $('simBlock').textContent = event ? `#${event.block_id}` : '?';
   $('simStatus').textContent = event ? event.status : '?';
   $('simLatency').textContent = event ? `${event.latency.toFixed(2)} ms` : '? ms';
   $('simFlowLabel').textContent = event ? `${event.operation} | ${event.bucket} | step ${Math.max(simStageIndex + 1, 0)}/${event.steps.length}` : 'Waiting for an operation';
   $('simBucketValue').textContent = event ? event.bucket : '?';
   $('simBucketNote').textContent = activeStep ? activeStep.title : 'Waiting';
-  $('simBlockValue').textContent = event && event.block_id !== null ? `#${event.block_id}` : 'N/A';
+  $('simBlockValue').textContent = event ? `#${event.block_id}` : '?';
   $('simBlockNote').textContent = activeStep ? activeStep.detail : 'No block selected';
-  $('simArrow').classList.toggle('active', simStageIndex >= 1 && !!event && event.block_id !== null);
+  $('simArrow').classList.toggle('active', simStageIndex >= 1);
 
-  renderSimBucketDiagram(payload, event, simStageIndex);
+  renderSimBucketDiagram(payload, event, simStageIndex, simRotateIndex);
   renderBuckets(payload ? payload.buckets : {}, payload ? (payload.bucket_pointers || {}) : {}, 'simBucketGrid', null);
   renderProcessRail(event, simStageIndex);
   renderSimBlockFocus(block, event);
 
   const complexity = $('simComplexity');
-  const showComplexity = (simStageIndex === 1 || simStageIndex === 2) && !!event;
-  complexity.textContent = simStageIndex === 1 ? 'BUCKET LOOKUP: O(1)' : 'ROUND ROBIN UPDATE: O(1)';
+  const showComplexity = simStageIndex === 0 || simStageIndex === 1;
+  complexity.textContent = simStageIndex <= 1 ? 'O(1) bucket lookup' : 'O(1) pointer and metadata update';
   complexity.classList.toggle('show', showComplexity);
 
   if (event && activeStep) {
@@ -1623,13 +1508,22 @@ function advanceSimulation() {
   if (!simEvent) return;
   const speed = getSpeedProfile();
 
+  if (simStageIndex === 0) {
+    const activeBucket = (latestPayload.buckets && latestPayload.buckets[simEvent.bucket]) || [];
+    if (activeBucket.length > 0 && simRotateIndex < Math.min(activeBucket.length - 1, simEvent.pointer)) {
+      simRotateIndex += 1;
+      renderSimulationFrame();
+      simTimer = setTimeout(advanceSimulation, speed.rotate);
+      return;
+    }
+  }
+
   simStageIndex += 1;
   if (simStageIndex >= simEvent.steps.length) {
     simStageIndex = simEvent.steps.length - 1;
     renderSimulationFrame();
     $('simCaption').innerHTML = `<strong>${simEvent.operation} complete.</strong> Block #${simEvent.block_id} finished with status ${simEvent.status} in ${simEvent.latency.toFixed(2)} ms.`;
-    $('simStartBtn').textContent = 'Start Simulation';
-    $('simSendBtn').textContent = $('simOpSelect').value !== 'READ' ? 'Send To Process' : 'Run Read Process';
+    $('simStartBtn').textContent = 'Run Simulation';
     simPending = false;
     stopSimulationTimer();
     return;
@@ -1646,16 +1540,15 @@ function startSimulation() {
   simEvent = null;
   simSnapshot = null;
   simStageIndex = -1;
+  simRotateIndex = -1;
 
   const operation = $('simOpSelect').value === 'auto' ? 'WRITE' : $('simOpSelect').value;
   const text = $('simWriteText').value;
-  const selectedReadBlock = $('simReadBlockSelect').value;
   const byteSize = getUtf8Size(text);
-  const limit = getBlockSizeLimit();
 
-  if (operation === 'WRITE' && byteSize > limit) {
+  if (operation === 'WRITE' && byteSize > 65536) {
     resetSimulationView('Write input exceeds block size');
-    $('simCaption').innerHTML = `<strong>Input rejected.</strong> ${byteSize} bytes exceeds the ${limit} byte block size.`;
+    $('simCaption').innerHTML = `<strong>Input rejected.</strong> ${byteSize} bytes exceeds the 65536 byte block size.`;
     return;
   }
 
@@ -1665,18 +1558,11 @@ function startSimulation() {
     return;
   }
 
-  if (operation === 'READ' && !selectedReadBlock) {
-    resetSimulationView('Read block required');
-    $('simCaption').innerHTML = '<strong>Selection required.</strong> Choose a block before running a read simulation.';
-    return;
-  }
-
   simPending = true;
   $('simStartBtn').textContent = 'Waiting for backend...';
-  $('simSendBtn').textContent = 'Sending...';
   $('simFlowLabel').textContent = `${operation} requested`;
   $('simCaption').innerHTML = `<strong>Request sent.</strong> Waiting for backend to ${operation.toLowerCase()} real data on the drive and return the selected block.`;
-  ws.send(JSON.stringify({ type: 'manual_simulate', operation, data: text, block_id: operation === 'READ' ? parseInt(selectedReadBlock, 10) : null }));
+  ws.send(JSON.stringify({ type: 'manual_simulate', operation, data: text }));
 }
 
 function renderSimulation(payload) {
@@ -1687,9 +1573,9 @@ function renderSimulation(payload) {
     simEvent = manualEvent;
     simSnapshot = JSON.parse(JSON.stringify(payload));
     simStageIndex = 0;
+    simRotateIndex = -1;
     simPending = false;
     $('simStartBtn').textContent = 'Running...';
-    $('simSendBtn').textContent = 'Running...';
     renderSimulationFrame();
     stopSimulationTimer();
     simTimer = setTimeout(advanceSimulation, 400);
@@ -1697,25 +1583,24 @@ function renderSimulation(payload) {
   }
 
   const preview = pickSimulationEvent(payload);
-  const block = preview && preview.block_id !== null ? (payload.blocks || []).find(b => b.id === preview.block_id) : null;
+  const block = preview ? (payload.blocks || []).find(b => b.id === preview.block_id) : null;
 
   if (!simEvent && !simPending) {
     $('simOp').textContent = preview ? preview.operation : '?';
-    $('simBlock').textContent = preview && preview.block_id !== null ? `#${preview.block_id}` : 'N/A';
+    $('simBlock').textContent = preview ? `#${preview.block_id}` : '?';
     $('simStatus').textContent = preview ? preview.status : '?';
     $('simLatency').textContent = preview ? `${preview.latency.toFixed(2)} ms` : '? ms';
     $('simFlowLabel').textContent = preview ? `Ready: ${preview.operation} / ${preview.bucket}` : 'Waiting for an operation';
     $('simBucketValue').textContent = preview ? preview.bucket : '?';
     $('simBucketNote').textContent = preview ? 'Ready for bucket lookup' : 'Waiting';
-    $('simBlockValue').textContent = preview && preview.block_id !== null ? `#${preview.block_id}` : 'N/A';
+    $('simBlockValue').textContent = preview ? `#${preview.block_id}` : '?';
     $('simBlockNote').textContent = preview ? 'Ready for selection' : 'No block selected';
     $('simCaption').innerHTML = preview
-      ? `<strong>Ready.</strong> Press start to animate one ${preview.operation.toLowerCase()} path${preview.block_id !== null ? ` for block #${preview.block_id}` : ''}.`
+      ? `<strong>Ready.</strong> Press start to animate one ${preview.operation.toLowerCase()} path for block #${preview.block_id}.`
       : '<strong>Simulation idle.</strong> Waiting for a read or write event from the backend.';
     $('simStartBtn').textContent = 'Start Simulation';
-    $('simSendBtn').textContent = $('simOpSelect').value !== 'READ' ? 'Send To Process' : 'Run Read Process';
     renderBuckets(payload.buckets, payload.bucket_pointers || {}, 'simBucketGrid', null);
-    renderSimBucketDiagram(payload, preview, -1);
+    renderSimBucketDiagram(payload, preview, -1, -1);
     renderSimBlockFocus(block, preview);
     $('simProcessRail').innerHTML = '<div class="event-empty">Press start to animate the flow.</div>';
     $('simComplexity').classList.remove('show');
@@ -1798,7 +1683,6 @@ function onPayload(payload) {
 
   renderBlocks(payload.blocks);
   renderBuckets(payload.buckets, payload.bucket_pointers || {});
-  renderReadBlockOptions(payload.blocks || []);
   renderSimulation(payload);
   renderRiskList(payload.top_risky);
   renderLog(payload.action_log);
@@ -1896,12 +1780,10 @@ $('simOpSelect').addEventListener('change', () => {
   const isWrite = $('simOpSelect').value !== 'READ';
   $('simWriteText').disabled = !isWrite;
   $('simWriteText').style.opacity = isWrite ? '1' : '.55';
-  $('simReadBlockLabel').style.display = isWrite ? 'none' : 'block';
-  $('simReadBlockSelect').style.display = isWrite ? 'none' : 'block';
   $('simSendBtn').textContent = isWrite ? 'Send To Process' : 'Run Read Process';
   $('simActionHint').textContent = isWrite
     ? 'Enter text, then send it to the write process.'
-    : 'Choose a block and run the staged ECC read pipeline on that block.';
+    : 'Read uses the next block selected by the bucket lookup and round-robin flow.';
 });
 
 function openModal()  { $('modalOverlay').classList.add('open'); }
@@ -1933,6 +1815,7 @@ function resetSimulation() {
   simEvent = null;
   simSnapshot = null;
   simStageIndex = -1;
+  simRotateIndex = -1;
   $('simStartBtn').textContent = 'Start Simulation';
   resetSimulationView();
   if (ws && wsConnected) {
