@@ -671,10 +671,11 @@ class Telemetry:
 class StressEngine:
     MODES = ["random", "mixed", "sequential"]
 
-    def __init__(self, telemetry: Telemetry, blocks: List[BlockState], bucket_manager: BucketManager):
+    def __init__(self, telemetry: Telemetry, blocks: List[BlockState], bucket_manager: BucketManager, decision_engine=None):
         self.telemetry = telemetry
         self.blocks = blocks
         self.bucket_manager = bucket_manager
+        self.decision = decision_engine
         self.mode = "mixed"
         self.intensity = 1.0
         self._degraded: Dict[int, float] = {}
@@ -828,7 +829,8 @@ class StressEngine:
         block.last_ecc_status = "N/A"
         block.last_intelligence_triggered = False
         old_bucket_name = bucket_name
-        self.bucket_manager.decision.evaluate_single(block)
+        if self.decision:
+            self.decision.evaluate_single(block)
         self.bucket_manager.sync_block(block)
         pointer_after = self.bucket_manager.pointer.get(old_bucket_name, 0)
 
@@ -921,8 +923,8 @@ class StressEngine:
         block.last_intelligence_triggered = intelligence_triggered
         old_bucket_name = bucket_name
         
-        if intelligence_triggered:
-            self.bucket_manager.decision.evaluate_single(block)
+        if intelligence_triggered and self.decision:
+            self.decision.evaluate_single(block)
         
         self.bucket_manager.sync_block(block)
         pointer_after = self.bucket_manager.pointer.get(old_bucket_name, 0)
@@ -1500,7 +1502,7 @@ class StorageGuardSystem:
         self.decision = DecisionEngine(self.blocks, self.bucket_manager)
         self.migration_manager = MigrationManager(self.telemetry, self.blocks, self.bucket_manager, self.decision)
         self.decision.migration_manager = self.migration_manager
-        self.stress = StressEngine(self.telemetry, self.blocks, self.bucket_manager)
+        self.stress = StressEngine(self.telemetry, self.blocks, self.bucket_manager, self.decision)
         self.base_path = base_path
 
         self._tick = 0
@@ -1641,6 +1643,8 @@ class StorageGuardSystem:
             "blocks": blocks_data,
             "buckets": self.bucket_manager.snapshot(),
             "bucket_pointers": dict(self.bucket_manager.pointer),
+            "migration_queue": self.migration_manager.pending_blocks,
+            "migration_queue_size": self.migration_manager.queue_size,
             "bucket_state_path": self.bucket_manager.state_path,
             "metadata_path": self.metadata_path,
             "top_risky": self.decision.top_risky(5),

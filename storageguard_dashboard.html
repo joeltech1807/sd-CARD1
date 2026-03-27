@@ -698,11 +698,61 @@ input[type=range] {
   outline: 2px solid rgba(37, 99, 235, .35);
   border-color: #93c5fd;
 }
+.bucket-pill.selected {
+  background: #dbeafe;
+  border-color: #60a5fa;
+  color: #1d4ed8;
+  font-weight: 700;
+}
 .bucket-empty {
   font-size: 10px;
   color: var(--subtle);
   font-family: var(--mono);
   padding: 4px 0 0;
+}
+.queue-panel {
+  margin-top: 10px;
+  border: 1px dashed var(--border2);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--surface);
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.queue-title {
+  font-size: 10px;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--muted);
+}
+.queue-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.queue-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.queue-item {
+  font-family: var(--mono);
+  font-size: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--text);
+}
+.queue-item.top {
+  border-color: #fb7185;
+  color: #be123c;
+  background: #fff1f2;
 }
 
 
@@ -944,6 +994,15 @@ input[type=range] {
             <div class="bucket-sub" id="bucketHint">Pointer: HEALTHY</div>
           </div>
           <div class="bucket-grid" id="bucketGrid"></div>
+          <div class="queue-panel">
+            <div class="queue-head">
+              <div class="queue-title">Migration Queue</div>
+              <div class="queue-count" id="queueCount">size=0</div>
+            </div>
+            <div class="queue-list" id="queueList">
+              <div class="bucket-empty">Queue empty</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1043,6 +1102,7 @@ input[type=range] {
           <option value="auto">Auto</option>
           <option value="READ">Read</option>
           <option value="WRITE">Write</option>
+          <option value="MIGRATE">Migrate</option>
         </select>
         <button class="btn btn-primary" id="simStartBtn" onclick="startSimulation()">Start Simulation</button>
       </div>
@@ -1293,7 +1353,7 @@ function renderBlocks(blocks) {
   });
 }
 
-function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = 'bucketHint') {
+function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = 'bucketHint', selected = null) {
   const order = ['HEALTHY', 'WEAK', 'CRITICAL', 'RETIRED'];
   const hint = hintId ? $(hintId) : null;
   const grid = $(gridId);
@@ -1302,22 +1362,30 @@ function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = '
   grid.innerHTML = order.map(name => {
     const blocks = buckets && buckets[name] ? buckets[name] : [];
     const pointer = Number.isInteger(pointers[name]) ? pointers[name] : 0;
-    const displayCount = Math.min(blocks.length, 12);
-    const pills = blocks.slice(0, displayCount).map((id, idx) => {
-      const cls = blocks.length > 0 && idx === (pointer % blocks.length) ? 'bucket-pill pointer' : 'bucket-pill';
-      return `<span class="${cls}">#${id}</span>`;
+    const nextIndex = blocks.length > 0 ? (pointer % blocks.length) : -1;
+    const nextId = nextIndex >= 0 ? blocks[nextIndex] : null;
+    const pills = blocks.map((id, idx) => {
+      const classes = ['bucket-pill'];
+      if (idx === nextIndex) classes.push('pointer');
+      if (selected && selected.bucket === name && selected.block_id === id) classes.push('selected');
+      const title = idx === nextIndex ? ' title="Next pointer target"' : '';
+      const label = (selected && selected.bucket === name && selected.block_id === id) ? `● #${id}` : `#${id}`;
+      return `<span class="${classes.join(' ')}"${title}>${label}</span>`;
     }).join('');
-    const overflow = blocks.length > displayCount ? `<span class="bucket-pill">+${blocks.length - displayCount}</span>` : "";
+    const meta = nextId === null ? `${blocks.length}` : `${blocks.length} | next=#${nextId}`;
+    const selectedText = selected && selected.bucket === name && Number.isInteger(selected.block_id)
+      ? `<div class="bucket-empty">selected: #${selected.block_id}</div>`
+      : '';
     return `
       <div class="bucket-card ${name}">
         <div class="bucket-row">
           <span class="bucket-name">${name}</span>
-          <span class="bucket-count">${blocks.length}</span>
+          <span class="bucket-count">${meta}</span>
         </div>
         <div class="bucket-pills">
           ${pills || '<div class="bucket-empty">No blocks</div>'}
-          ${overflow}
         </div>
+        ${selectedText}
       </div>`;
   }).join('');
 
@@ -1334,6 +1402,28 @@ function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = '
   }
 }
 
+function renderQueue(queue = []) {
+  const list = $('queueList');
+  const count = $('queueCount');
+  if (!list || !count) return;
+
+  const entries = Array.isArray(queue) ? queue : [];
+  count.textContent = `size=${entries.length}`;
+
+  if (!entries.length) {
+    list.innerHTML = '<div class="bucket-empty">Queue empty</div>';
+    return;
+  }
+
+  list.innerHTML = entries.map((q, idx) => {
+    const cls = idx === 0 ? 'queue-item top' : 'queue-item';
+    const blockId = Number.isInteger(q.block_id) ? q.block_id : '?';
+    const priority = (typeof q.priority === 'number') ? q.priority : '?';
+    const label = idx === 0 ? `HEAD #${blockId} p=${priority}` : `#${blockId} p=${priority}`;
+    return `<span class="${cls}">${label}</span>`;
+  }).join('');
+}
+
 let latestPayload = null;
 let simEvent = null;
 let simStageIndex = -1;
@@ -1342,6 +1432,7 @@ let simTimer = null;
 let simPending = false;
 let lastManualEventId = null;
 let simSnapshot = null;
+let lastAutoMigrationKey = null;
 
 function getUtf8Size(text) {
   return new TextEncoder().encode(text).length;
@@ -1396,16 +1487,79 @@ function stopSimulationTimer() {
   }
 }
 
+function normalizeSimulationEvent(payload, event) {
+  if (!event) return null;
+  if (event.operation !== 'MIGRATE') return event;
+
+  const blocks = payload && payload.blocks ? payload.blocks : [];
+  const sourceId = Number.isInteger(event.source_block) ? event.source_block : null;
+  const targetId = Number.isInteger(event.target_block) ? event.target_block : null;
+  const sourceBlock = sourceId !== null ? blocks.find(b => b.id === sourceId) : null;
+
+  return {
+    ...event,
+    block_id: sourceId,
+    bucket: sourceBlock ? sourceBlock.bucket : 'CRITICAL',
+    pointer: 0,
+    _source_block: sourceId,
+    _target_block: targetId,
+    _display_block: (sourceId !== null && targetId !== null) ? `#${sourceId} -> #${targetId}` : (sourceId !== null ? `#${sourceId}` : '?'),
+    text_preview: (targetId !== null) ? `migrate to #${targetId}` : 'migrate',
+  };
+}
+
+function simulationEventKey(event) {
+  if (!event) return '';
+  if (event.operation === 'MIGRATE') {
+    return `MIGRATE:${event.source_block}:${event.target_block}:${event.priority}:${event.latency}`;
+  }
+  return `${event.operation}:${event.block_id}:${event.bucket}:${event.pointer}:${event.latency}`;
+}
+
+function chooseAutoSimulationOperation(payload) {
+  const queueSize = payload
+    ? (typeof payload.migration_queue_size === 'number'
+      ? payload.migration_queue_size
+      : ((payload.migration_queue || []).length || 0))
+    : 0;
+  const ops = ['READ', 'WRITE'];
+  if (payload && payload.paused && queueSize > 0) {
+    ops.push('MIGRATE');
+  }
+  return ops[Math.floor(Math.random() * ops.length)];
+}
+
 function pickSimulationEvent(payload) {
-  if (payload && payload.manual_sim_event) return payload.manual_sim_event;
+  if (payload && payload.manual_sim_event) return normalizeSimulationEvent(payload, payload.manual_sim_event);
   const events = payload && payload.rw_events ? payload.rw_events : [];
   const choice = $('simOpSelect').value;
-  if (choice === 'auto') return events[0] || null;
-  return events.find(event => event.operation === choice) || null;
+  const raw = (choice === 'auto')
+    ? (events[0] || null)
+    : (events.find(event => event.operation === choice) || null);
+  return normalizeSimulationEvent(payload, raw);
 }
 
 function renderSimBlockFocus(block, event) {
   const el = $('simBlockDetail');
+  if (event && event.operation === 'MIGRATE') {
+    const payload = simSnapshot || latestPayload;
+    const blocks = payload && payload.blocks ? payload.blocks : [];
+    const source = Number.isInteger(event._source_block) ? blocks.find(b => b.id === event._source_block) : null;
+    const target = Number.isInteger(event._target_block) ? blocks.find(b => b.id === event._target_block) : null;
+    el.innerHTML = `
+      <div class="sim-metric"><span class="key">operation</span><span class="val">MIGRATE</span></div>
+      <div class="sim-metric"><span class="key">source</span><span class="val">${source ? `#${source.id}` : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">target</span><span class="val">${target ? `#${target.id}` : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">priority</span><span class="val">${typeof event.priority === 'number' ? event.priority : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">source state</span><span class="val">${source ? source.state : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">target state</span><span class="val">${target ? target.state : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">source health</span><span class="val">${typeof event.source_health === 'number' ? event.source_health.toFixed(2) : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">target health</span><span class="val">${typeof event.target_health === 'number' ? event.target_health.toFixed(2) : 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">status</span><span class="val">${event.status || 'N/A'}</span></div>
+      <div class="sim-metric"><span class="key">latency</span><span class="val">${typeof event.latency === 'number' ? `${event.latency.toFixed(2)} ms` : 'N/A'}</span></div>
+    `;
+    return;
+  }
   if (!block) {
     el.innerHTML = '<div class="event-empty">Start the simulation to animate one read or write path.</div>';
     return;
@@ -1433,9 +1587,10 @@ function renderSimBucketDiagram(payload, event, stageIndex, rotateIndex) {
   grid.innerHTML = order.map(name => {
     const arr = buckets[name] || [];
     const pointer = payload && payload.bucket_pointers && Number.isInteger(payload.bucket_pointers[name]) ? payload.bucket_pointers[name] : 0;
+    const nextId = arr.length > 0 ? arr[pointer % arr.length] : null;
     const active = event && name === event.bucket;
     const chosenId = event ? event.block_id : null;
-    const orbit = arr.slice(0, 10).map((id, idx) => {
+    const orbit = arr.map((id, idx) => {
       let cls = 'orbit-block';
       if (active && stageIndex === 0 && idx === rotateIndex) cls += ' scan';
       if (active && stageIndex >= 1 && id === chosenId) cls += ' chosen';
@@ -1446,7 +1601,7 @@ function renderSimBucketDiagram(payload, event, stageIndex, rotateIndex) {
       <div class="bucket-node ${name} ${active ? 'active' : ''}">
         <div class="bucket-node-head">
           <span class="bucket-node-name">${name}</span>
-          <span class="bucket-node-count">${arr.length} | p=${pointer}</span>
+          <span class="bucket-node-count">${arr.length} | p=${pointer}${nextId !== null ? ` | next=#${nextId}` : ''}</span>
         </div>
         <div class="bucket-orbit">${orbit || '<span class="event-empty">empty</span>'}</div>
       </div>
@@ -1477,15 +1632,16 @@ function renderSimulationFrame() {
   const event = simEvent;
   const block = event && payload ? (payload.blocks || []).find(b => b.id === event.block_id) : null;
   const activeStep = event && simStageIndex >= 0 ? event.steps[Math.min(simStageIndex, event.steps.length - 1)] : null;
+  const blockLabel = event ? (event._display_block || (Number.isInteger(event.block_id) ? `#${event.block_id}` : '?')) : '?';
 
   $('simOp').textContent = event ? event.operation : '?';
-  $('simBlock').textContent = event ? `#${event.block_id}` : '?';
+  $('simBlock').textContent = blockLabel;
   $('simStatus').textContent = event ? event.status : '?';
   $('simLatency').textContent = event ? `${event.latency.toFixed(2)} ms` : '? ms';
   $('simFlowLabel').textContent = event ? `${event.operation} | ${event.bucket} | step ${Math.max(simStageIndex + 1, 0)}/${event.steps.length}` : 'Waiting for an operation';
   $('simBucketValue').textContent = event ? event.bucket : '?';
   $('simBucketNote').textContent = activeStep ? activeStep.title : 'Waiting';
-  $('simBlockValue').textContent = event ? `#${event.block_id}` : '?';
+  $('simBlockValue').textContent = blockLabel;
   $('simBlockNote').textContent = activeStep ? activeStep.detail : 'No block selected';
   $('simArrow').classList.toggle('active', simStageIndex >= 1);
 
@@ -1522,7 +1678,8 @@ function advanceSimulation() {
   if (simStageIndex >= simEvent.steps.length) {
     simStageIndex = simEvent.steps.length - 1;
     renderSimulationFrame();
-    $('simCaption').innerHTML = `<strong>${simEvent.operation} complete.</strong> Block #${simEvent.block_id} finished with status ${simEvent.status} in ${simEvent.latency.toFixed(2)} ms.`;
+    const doneLabel = simEvent._display_block || (Number.isInteger(simEvent.block_id) ? `#${simEvent.block_id}` : 'N/A');
+    $('simCaption').innerHTML = `<strong>${simEvent.operation} complete.</strong> ${doneLabel} finished with status ${simEvent.status} in ${simEvent.latency.toFixed(2)} ms.`;
     $('simStartBtn').textContent = 'Run Simulation';
     simPending = false;
     stopSimulationTimer();
@@ -1542,8 +1699,31 @@ function startSimulation() {
   simStageIndex = -1;
   simRotateIndex = -1;
 
-  const operation = $('simOpSelect').value === 'auto' ? 'WRITE' : $('simOpSelect').value;
-  const text = $('simWriteText').value;
+  const selection = $('simOpSelect').value;
+  const operation = selection === 'auto' ? chooseAutoSimulationOperation(latestPayload) : selection;
+  if (operation === 'MIGRATE') {
+    const preview = pickSimulationEvent(latestPayload);
+    if (!preview || preview.operation !== 'MIGRATE') {
+      resetSimulationView('No migration event available');
+      $('simCaption').innerHTML = '<strong>No migration event.</strong> Pause the simulation and wait for queued blocks to migrate.';
+      return;
+    }
+    simEvent = preview;
+    simSnapshot = JSON.parse(JSON.stringify(latestPayload));
+    simStageIndex = 0;
+    simRotateIndex = -1;
+    simPending = false;
+    $('simStartBtn').textContent = 'Running...';
+    renderSimulationFrame();
+    stopSimulationTimer();
+    simTimer = setTimeout(advanceSimulation, 400);
+    return;
+  }
+
+  let text = $('simWriteText').value;
+  if (operation === 'WRITE' && selection === 'auto' && getUtf8Size(text) === 0) {
+    text = `AUTO-${Date.now()}`;
+  }
   const byteSize = getUtf8Size(text);
 
   if (operation === 'WRITE' && byteSize > 65536) {
@@ -1560,7 +1740,7 @@ function startSimulation() {
 
   simPending = true;
   $('simStartBtn').textContent = 'Waiting for backend...';
-  $('simFlowLabel').textContent = `${operation} requested`;
+  $('simFlowLabel').textContent = selection === 'auto' ? `AUTO -> ${operation} requested` : `${operation} requested`;
   $('simCaption').innerHTML = `<strong>Request sent.</strong> Waiting for backend to ${operation.toLowerCase()} real data on the drive and return the selected block.`;
   ws.send(JSON.stringify({ type: 'manual_simulate', operation, data: text }));
 }
@@ -1570,7 +1750,7 @@ function renderSimulation(payload) {
   const manualEvent = payload.manual_sim_event || null;
   if (manualEvent && manualEvent.event_id !== lastManualEventId) {
     lastManualEventId = manualEvent.event_id;
-    simEvent = manualEvent;
+    simEvent = normalizeSimulationEvent(payload, manualEvent);
     simSnapshot = JSON.parse(JSON.stringify(payload));
     simStageIndex = 0;
     simRotateIndex = -1;
@@ -1584,6 +1764,23 @@ function renderSimulation(payload) {
 
   const preview = pickSimulationEvent(payload);
   const block = preview ? (payload.blocks || []).find(b => b.id === preview.block_id) : null;
+
+  if (payload.paused && preview && preview.operation === 'MIGRATE' && !simPending) {
+    const nextKey = simulationEventKey(preview);
+    const currentKey = simulationEventKey(simEvent);
+    if (!simEvent || currentKey !== nextKey) {
+      lastAutoMigrationKey = nextKey;
+      simEvent = preview;
+      simSnapshot = JSON.parse(JSON.stringify(payload));
+      simStageIndex = 0;
+      simRotateIndex = -1;
+      $('simStartBtn').textContent = 'Running...';
+      renderSimulationFrame();
+      stopSimulationTimer();
+      simTimer = setTimeout(advanceSimulation, 280);
+      return;
+    }
+  }
 
   if (!simEvent && !simPending) {
     $('simOp').textContent = preview ? preview.operation : '?';
@@ -1682,7 +1879,11 @@ function onPayload(payload) {
   }
 
   renderBlocks(payload.blocks);
-  renderBuckets(payload.buckets, payload.bucket_pointers || {});
+  const selectedEvent = (payload.rw_events || []).find(e =>
+    Number.isInteger(e.block_id) && typeof e.bucket === 'string' && (e.operation === 'READ' || e.operation === 'WRITE')
+  ) || null;
+  renderBuckets(payload.buckets, payload.bucket_pointers || {}, 'bucketGrid', 'bucketHint', selectedEvent);
+  renderQueue(payload.migration_queue || []);
   renderSimulation(payload);
   renderRiskList(payload.top_risky);
   renderLog(payload.action_log);
@@ -1777,13 +1978,22 @@ $('intensitySlider').addEventListener('input', e => {
 $('simWriteText').addEventListener('input', updateSimByteCount);
 $('simSpeedSlider').addEventListener('input', updateSimSpeedLabel);
 $('simOpSelect').addEventListener('change', () => {
-  const isWrite = $('simOpSelect').value !== 'READ';
+  const choice = $('simOpSelect').value;
+  const isWrite = choice === 'WRITE';
+  const isMigrate = choice === 'MIGRATE';
+  const isAuto = choice === 'auto';
   $('simWriteText').disabled = !isWrite;
   $('simWriteText').style.opacity = isWrite ? '1' : '.55';
-  $('simSendBtn').textContent = isWrite ? 'Send To Process' : 'Run Read Process';
+  $('simSendBtn').textContent = isWrite
+    ? 'Send To Process'
+    : (isMigrate ? 'Run Migration Process' : (isAuto ? 'Run Random Process' : 'Run Read Process'));
   $('simActionHint').textContent = isWrite
     ? 'Enter text, then send it to the write process.'
-    : 'Read uses the next block selected by the bucket lookup and round-robin flow.';
+    : (isMigrate
+      ? 'Migration animates queued block transfer (source -> healthy target) while simulation is paused.'
+      : (isAuto
+        ? 'Auto picks a random operation each run (read/write, and migrate when queue exists during pause).'
+        : 'Read uses the next block selected by the bucket lookup and round-robin flow.'));
 });
 
 function openModal()  { $('modalOverlay').classList.add('open'); }
