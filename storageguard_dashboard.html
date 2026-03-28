@@ -610,7 +610,25 @@ input[type=range] {
 .block.AVOIDED  { background: #f8fafc; border-color: #e2e8f0; opacity: .55; }
 .block.AVOIDED .block-val  { color: var(--subtle); }
 
+.block.visit-read {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.28);
+  animation: visitReadPulse .28s ease;
+}
+
+.block.visit-write {
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.32);
+  animation: visitWritePulse .28s ease;
+}
+
+.block.current-active {
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.55);
+  transform: scale(1.08);
+  z-index: 12;
+}
+
 @keyframes critPulse { 0%,100%{border-color:#fca5a5} 50%{border-color:#ef4444} }
+@keyframes visitReadPulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+@keyframes visitWritePulse { from { transform: scale(1); } to { transform: scale(1.08); } }
 
 .legend {
   display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap;
@@ -905,14 +923,6 @@ input[type=range] {
     </span>
     <div class="ctrl-row">
       <div class="ctrl-group">
-        <span class="ctrl-label">Mode</span>
-        <select id="modeSelect">
-          <option value="mixed">Mixed</option>
-          <option value="random">Random</option>
-          <option value="sequential">Sequential</option>
-        </select>
-      </div>
-      <div class="ctrl-group">
         <span class="ctrl-label">Intensity</span>
         <input type="range" id="intensitySlider" min="1" max="10" value="10">
         <span id="intensityVal" class="ctrl-label">10</span>
@@ -1082,9 +1092,6 @@ input[type=range] {
             <div class="lat-track"><div class="lat-fill-prop" id="propBar" style="width:0%"></div></div>
           </div>
         </div>
-        <div class="verdict">
-          <span id="verdictText">Collecting data — the predictive engine will demonstrate latency savings once degradation patterns emerge from the SD card measurements.</span>
-        </div>
       </div>
     </div>
   </div>
@@ -1124,10 +1131,10 @@ input[type=range] {
       <div class="sim-speed-card">
         <div class="sim-speed-stack">
           <label class="sim-form-label" for="simSpeedSlider">Animation Speed</label>
-          <input type="range" id="simSpeedSlider" min="1" max="9" value="5">
+          <input type="range" id="simSpeedSlider" min="1" max="9" value="9">
           <div class="sim-input-meta">
-            <span id="simSpeedLabel">Normal</span>
-            <span id="simSpeedMs">1.00x</span>
+            <span id="simSpeedLabel">Rapid</span>
+            <span id="simSpeedMs">3.40x</span>
           </div>
           <div class="sim-speed-note">Slower values hold each visual stage longer so the bucket lookup, O(1) label, and pointer movement remain visible.</div>
         </div>
@@ -1313,6 +1320,8 @@ for (let i = 0; i < 32; i++) {
 
 // Per-block state cache for tooltip
 const blockCache = {};
+const visitHighlightTimers = new Map();
+let currentActiveBlockId = null;
 
 function showTooltip(e, id) {
   const b = blockCache[id];
@@ -1351,6 +1360,51 @@ function renderBlocks(blocks) {
     const valEl = el.querySelector('.block-val');
     valEl.textContent = b.avg_lat > 0 ? b.avg_lat.toFixed(0) + '' : '—';
   });
+}
+
+function highlightVisitedBlocks(events, tick) {
+  const validEvents = (Array.isArray(events) ? events : []).filter(e =>
+    e &&
+    Number.isInteger(e.block_id) &&
+    (e.operation === 'READ' || e.operation === 'WRITE') &&
+    e.tick === tick
+  );
+
+  validEvents.forEach(evt => {
+    const el = $(`blk-${evt.block_id}`);
+    if (!el) return;
+
+    const visitClass = evt.operation === 'READ' ? 'visit-read' : 'visit-write';
+    el.classList.remove('visit-read', 'visit-write');
+    void el.offsetWidth;
+    el.classList.add(visitClass);
+
+    if (visitHighlightTimers.has(evt.block_id)) {
+      clearTimeout(visitHighlightTimers.get(evt.block_id));
+    }
+
+    const timerId = setTimeout(() => {
+      el.classList.remove('visit-read', 'visit-write');
+      visitHighlightTimers.delete(evt.block_id);
+    }, 220);
+    visitHighlightTimers.set(evt.block_id, timerId);
+  });
+}
+
+function renderCurrentActiveBlock(event) {
+  if (Number.isInteger(currentActiveBlockId)) {
+    const prev = $(`blk-${currentActiveBlockId}`);
+    if (prev) prev.classList.remove('current-active');
+  }
+
+  if (!event || !Number.isInteger(event.block_id)) {
+    currentActiveBlockId = null;
+    return;
+  }
+
+  currentActiveBlockId = event.block_id;
+  const el = $(`blk-${currentActiveBlockId}`);
+  if (el) el.classList.add('current-active');
 }
 
 function renderBuckets(buckets, pointers = {}, gridId = 'bucketGrid', hintId = 'bucketHint', selected = null) {
@@ -1446,15 +1500,15 @@ function updateSimByteCount() {
 
 function getSpeedProfile() {
   const profiles = {
-    1: { label: 'Very Slow', factor: 0.28, base: 3200, rotate: 900 },
-    2: { label: 'Slow', factor: 0.45, base: 2400, rotate: 700 },
-    3: { label: 'Calm', factor: 0.65, base: 1900, rotate: 560 },
-    4: { label: 'Measured', factor: 0.85, base: 1550, rotate: 440 },
-    5: { label: 'Normal', factor: 1.00, base: 1250, rotate: 320 },
-    6: { label: 'Brisk', factor: 1.25, base: 980, rotate: 250 },
-    7: { label: 'Fast', factor: 1.6, base: 760, rotate: 190 },
-    8: { label: 'Very Fast', factor: 2.1, base: 560, rotate: 140 },
-    9: { label: 'Rapid', factor: 2.8, base: 420, rotate: 100 },
+    1: { label: 'Very Slow', factor: 0.45, base: 2200, rotate: 650 },
+    2: { label: 'Slow', factor: 0.65, base: 1700, rotate: 520 },
+    3: { label: 'Calm', factor: 0.85, base: 1350, rotate: 410 },
+    4: { label: 'Measured', factor: 1.05, base: 1050, rotate: 320 },
+    5: { label: 'Normal', factor: 1.30, base: 820, rotate: 250 },
+    6: { label: 'Brisk', factor: 1.65, base: 640, rotate: 190 },
+    7: { label: 'Fast', factor: 2.10, base: 500, rotate: 145 },
+    8: { label: 'Very Fast', factor: 2.70, base: 380, rotate: 110 },
+    9: { label: 'Rapid', factor: 3.40, base: 280, rotate: 85 },
   };
   const value = parseInt($('simSpeedSlider').value, 10);
   return profiles[value] || profiles[5];
@@ -1858,12 +1912,14 @@ function renderStats(stats, currentLat) {
   const saved = stats.trad_avg_lat - stats.prop_avg_lat;
   const pct = stats.trad_avg_lat > 0 ? (saved / stats.trad_avg_lat * 100) : 0;
   const verdict = $('verdictText');
-  if (saved > 0.5) {
-    verdict.innerHTML = `<strong>Predictive system saves ${saved.toFixed(1)} ms per operation (${pct.toFixed(0)}% faster)</strong> by redirecting writes away from ${stats.avoided_blocks} degraded block(s) before failure occurs. Traditional storage continues absorbing high-latency operations.`;
-  } else if (stats.total_writes + stats.total_reads < 30) {
-    verdict.textContent = 'Warming up — collecting initial I/O samples from SD card. Fault injection begins shortly.';
-  } else {
-    verdict.innerHTML = '<strong>Systems are comparable</strong> — no significant degradation detected yet. Controlled fault injection will demonstrate the performance gap.';
+  if (verdict) {
+    if (saved > 0.5) {
+      verdict.innerHTML = `<strong>Predictive system saves ${saved.toFixed(1)} ms per operation (${pct.toFixed(0)}% faster)</strong> by redirecting writes away from ${stats.avoided_blocks} degraded block(s) before failure occurs. Traditional storage continues absorbing high-latency operations.`;
+    } else if (stats.total_writes + stats.total_reads < 30) {
+      verdict.textContent = 'Warming up - collecting initial I/O samples from SD card.';
+    } else {
+      verdict.innerHTML = '<strong>Systems are comparable</strong> - no significant degradation detected yet.';
+    }
   }
 }
 
@@ -1879,9 +1935,11 @@ function onPayload(payload) {
   }
 
   renderBlocks(payload.blocks);
+  highlightVisitedBlocks(payload.rw_events || [], payload.tick);
   const selectedEvent = (payload.rw_events || []).find(e =>
     Number.isInteger(e.block_id) && typeof e.bucket === 'string' && (e.operation === 'READ' || e.operation === 'WRITE')
   ) || null;
+  renderCurrentActiveBlock(selectedEvent);
   renderBuckets(payload.buckets, payload.bucket_pointers || {}, 'bucketGrid', 'bucketHint', selectedEvent);
   renderQueue(payload.migration_queue || []);
   renderSimulation(payload);
@@ -1966,10 +2024,6 @@ connect();
 // ═══════════════════════════════════════════════════════
 //  CONTROLS
 // ═══════════════════════════════════════════════════════
-$('modeSelect').addEventListener('change', e => {
-  if (ws && wsConnected) ws.send(JSON.stringify({ type: 'set_mode', value: e.target.value }));
-});
-
 $('intensitySlider').addEventListener('input', e => {
   $('intensityVal').textContent = e.target.value;
   if (ws && wsConnected) ws.send(JSON.stringify({ type: 'set_intensity', value: e.target.value / 10 }));

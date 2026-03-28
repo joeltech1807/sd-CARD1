@@ -26,6 +26,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+try:
+    import requests
+except Exception:
+    requests = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -39,7 +44,7 @@ log = logging.getLogger("StorageGuard")
 NUM_BLOCKS         = 32
 BLOCK_SIZE_BYTES   = 256 * 1024     # 256 KB per logical block
 HISTORY_LEN        = 60
-TICK_INTERVAL_S    = 0.3  # faster ticks (was 0.6)
+TICK_INTERVAL_S    = 0.10  # faster simulation ticks
 
 STATE_HEALTHY = "HEALTHY"
 STATE_WEAK = "WEAK"
@@ -48,7 +53,8 @@ STATE_RETIRED = "RETIRED"
 
 BUCKET_ORDER = [STATE_HEALTHY, STATE_WEAK, STATE_CRITICAL, STATE_RETIRED]
 SELECTABLE_BUCKETS = [STATE_HEALTHY, STATE_WEAK, STATE_CRITICAL]
-READ_PREFERRED_BUCKETS = [STATE_HEALTHY, STATE_WEAK]
+READ_PREFERRED_BUCKETS = [STATE_HEALTHY, STATE_WEAK, STATE_CRITICAL]
+WRITE_PREFERRED_BUCKETS = [STATE_HEALTHY, STATE_WEAK]
 READ_ERROR_SCALE = 10
 WRITE_ERROR_SCALE = 10
 RETENTION_ERROR_SECONDS = 12.0
@@ -58,8 +64,8 @@ MAX_READ_LIMIT = 100
 WEAR_WEIGHT = 0.5
 RETENTION_WEIGHT = 0.3
 READ_DISTURB_WEIGHT = 0.2
-ERROR_NOISE_MAX = 0.18
-ERROR_OUTPUT_SCALE = 4.0
+ERROR_NOISE_MAX = 0.24
+ERROR_OUTPUT_SCALE = 6.0
 BASE_WRITE_LATENCY_MS = 8.0
 BASE_READ_LATENCY_MS = 6.5
 LATENCY_NORMALIZATION_MS = 30.0
@@ -77,23 +83,47 @@ ECC_CORRECTION_LIMIT = ECC_STAGES[0]["capacity"]
 INTELLIGENCE_WRITE_INTERVAL = 5
 
 # -- Intelligence Tuning --
-MAX_PE                = 100
+MAX_PE                = 80
 MAX_WRITE_LIMIT       = MAX_PE
-BASELINE_LATENCY      = 10.0
-MAX_RETENTION         = 60.0
-ECC_GROWTH_LIMIT      = 0.15
-LATENCY_GROWTH_LIMIT  = 0.10
+BASELINE_LATENCY      = 8.0
+MAX_RETENTION         = 45.0
+ECC_GROWTH_LIMIT      = 0.10
+LATENCY_GROWTH_LIMIT  = 0.07
 BASE_ECC_CRITICAL     = 6.0
 BASE_LATENCY_LIMIT    = 18.0
 BASE_RETRY_LIMIT      = 5.0
-HEALTH_WARNING        = 0.60
-HEALTH_CRITICAL       = 0.80
+HEALTH_WARNING        = 0.35
+HEALTH_CRITICAL       = 0.55
 ELEVATED_THRESHOLD    = HEALTH_WARNING
 CRITICAL_THRESHOLD    = HEALTH_CRITICAL
 HISTORY_WINDOW        = 10
-HYSTERESIS_MARGIN     = 0.05
-EVAL_INTERVAL_TICKS   = 3
+HYSTERESIS_MARGIN     = 0.03
+EVAL_INTERVAL_TICKS   = 1
 MIGRATION_BATCH       = 2
+
+# Short demo tuning (target: visible full lifecycle in ~4 minutes)
+SENSITIVITY_MULTIPLIER = 1.9
+WRITE_LOAD_MULTIPLIER = 1.6
+
+# Telegram alerts
+TELEGRAM_BOT_TOKEN = "8721677412:AAHuNRx_cSpQLpL8Fc557bzfU8rsKf9WNcU"
+TELEGRAM_CHAT_ID = "7930820598"
+
+
+def send_telegram(message: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    if requests is None:
+        log.warning("[TELEGRAM] requests not installed; run `pip install requests` to enable alerts")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        response = requests.post(url, data=payload, timeout=4)
+        if response.status_code != 200:
+            log.warning(f"[TELEGRAM] Failed: {response.text}")
+    except Exception as exc:
+        log.warning(f"[TELEGRAM] Error: {exc}")
 
 
 # ---------------------------------------------------------
@@ -132,12 +162,13 @@ def extract_features(block) -> dict:
 def compute_health_score(features: dict) -> float:
     """Weighted composite health score. Returns 0-1 where higher = worse."""
     return (
-        0.25 * features["pe_norm"] +
-        0.20 * features["ecc_rate"] +
-        0.15 * features["latency_norm"] +
-        0.10 * features["retry_rate"] +
-        0.15 * features["retention_norm"] +
-        0.15 * features["ecc_growth"]
+        0.20 * features["pe_norm"] +
+        0.22 * features["ecc_rate"] +
+        0.16 * features["latency_norm"] +
+        0.12 * features["retry_rate"] +
+        0.10 * features["retention_norm"] +
+        0.12 * features["ecc_growth"] +
+        0.08 * features["latency_growth"]
     )
 
 
@@ -247,19 +278,30 @@ def detect_sd_card() -> Optional[str]:
 def choose_path(user_path: Optional[str]) -> str:
     if user_path:
         if not os.path.exists(user_path):
-            log.error(f"Path not found: {user_path}")
-            sys.exit(1)
-        return os.path.join(user_path, "storageguard_data")
+            log.warning(f"Path not found: {user_path} — falling back to temp directory")
+        else:
+            try:
+                path = os.path.join(user_path, "storageguard_data")
+                os.makedirs(path, exist_ok=True)
+                log.info(f"Using provided path: {path}")
+                return path
+            except Exception as e:
+                log.warning(f"Cannot use provided path {user_path}: {e} — falling back to temp directory")
 
     detected = detect_sd_card()
     if detected:
-        log.info(f"Using SD card: {detected}")
-        return os.path.join(detected, "storageguard_data")
+        try:
+            path = os.path.join(detected, "storageguard_data")
+            os.makedirs(path, exist_ok=True)
+            log.info(f"Using SD card: {detected}")
+            return path
+        except Exception as e:
+            log.warning(f"Cannot access detected SD card {detected}: {e} — falling back to temp directory")
 
     # Fallback: temp dir (real OS I/O, just not on SD card)
     tmp = tempfile.mkdtemp(prefix="storageguard_")
-    log.warning(f"No SD card detected — using temp dir: {tmp}")
-    log.warning("Insert your SD card and restart to measure real card latency.")
+    log.warning(f"No SD card available — using temp directory: {tmp}")
+    log.warning("Connect your SD card or Raspberry Pi for real device I/O testing.")
     return tmp
 
 
@@ -294,6 +336,7 @@ class BlockState:
     prev_eval_time: float = field(default_factory=time.time)
     intelligence_state: str = "NORMAL"
     read_retries: int = 0
+    critical_locked: bool = False
 
     def to_metadata(self) -> dict:
         return {
@@ -322,6 +365,7 @@ class BlockState:
             "prev_eval_time": self.prev_eval_time,
             "intelligence_state": self.intelligence_state,
             "read_retries": self.read_retries,
+            "critical_locked": self.critical_locked,
         }
 
     def apply_metadata(self, payload: dict):
@@ -353,6 +397,7 @@ class BlockState:
         self.prev_eval_time = float(payload.get("prev_eval_time", now))
         self.intelligence_state = str(payload.get("intelligence_state", "NORMAL"))
         self.read_retries = int(payload.get("read_retries", 0))
+        self.critical_locked = bool(payload.get("critical_locked", False))
 
     def record_write(self, latency_ms: float):
         self.write_count += 1
@@ -417,8 +462,13 @@ class BlockState:
         self.prev_eval_time = self.created_at
         self.intelligence_state = "NORMAL"
         self.read_retries = 0
+        self.critical_locked = False
 
     def sync_state(self):
+        if self.critical_locked:
+            self.intelligence_state = "CRITICAL"
+            self.state = STATE_CRITICAL
+            return
         if self.is_avoided:
             self.state = STATE_RETIRED
             return
@@ -572,6 +622,23 @@ class BucketManager:
         self._persist_state()
         return None
 
+    def select_random_detail(self, bucket_order: Optional[List[str]] = None) -> Optional[Tuple[int, str, int]]:
+        candidate_buckets = [
+            name for name in (bucket_order or SELECTABLE_BUCKETS)
+            if self.buckets.get(name)
+        ]
+        if not candidate_buckets:
+            self._persist_state()
+            return None
+
+        bucket_name = random.choice(candidate_buckets)
+        bucket = self.buckets[bucket_name]
+        pointer = random.randrange(len(bucket))
+        block_id = bucket[pointer]
+        self.pointer[bucket_name] = (pointer + 1) % len(bucket)
+        self._persist_state()
+        return block_id, bucket_name, pointer
+
     def select_specific_block(self, block_id: int) -> Optional[Tuple[int, str, int]]:
         bucket_name = self.block_bucket.get(block_id)
         if bucket_name is None or bucket_name not in SELECTABLE_BUCKETS:
@@ -608,52 +675,97 @@ class BucketManager:
 class Telemetry:
     def __init__(self, base_path: str):
         self.base_path = base_path
-        os.makedirs(base_path, exist_ok=True)
-        self._buf = os.urandom(BLOCK_SIZE_BYTES)
-        log.info(f"I/O working directory: {base_path}")
+        self._device_available = True
+        try:
+            os.makedirs(base_path, exist_ok=True)
+            self._buf = os.urandom(BLOCK_SIZE_BYTES)
+            log.info(f"I/O working directory: {base_path}")
+        except Exception as e:
+            log.warning(f"[TELEMETRY] Cannot initialize I/O at {base_path}: {e} — will use simulated latencies")
+            self._device_available = False
+            self._buf = os.urandom(BLOCK_SIZE_BYTES)
 
     def _block_path(self, block_id: int) -> str:
         return os.path.join(self.base_path, f"block_{block_id:04d}.bin")
 
     def measure_write(self, block_id: int, extra_delay_ms: float = 0.0) -> float:
-        path = self._block_path(block_id)
+        """Measure write latency; return simulated value if device unavailable."""
         if extra_delay_ms > 0:
             time.sleep(extra_delay_ms / 1000.0)
-        t0 = time.perf_counter()
-        with open(path, "wb") as f:
-            f.write(self._buf)
-            f.flush()
-            os.fsync(f.fileno())
-        return (time.perf_counter() - t0) * 1000.0
+        
+        if not self._device_available:
+            # Simulate latency when device not available
+            return BASE_WRITE_LATENCY_MS + random.uniform(0, WRITE_NOISE_MS)
+        
+        try:
+            path = self._block_path(block_id)
+            t0 = time.perf_counter()
+            with open(path, "wb") as f:
+                f.write(self._buf)
+                f.flush()
+                os.fsync(f.fileno())
+            return (time.perf_counter() - t0) * 1000.0
+        except Exception as e:
+            log.warning(f"[IO-WRITE] Block {block_id} write failed: {e} — using simulated latency")
+            self._device_available = False
+            return BASE_WRITE_LATENCY_MS + random.uniform(0, WRITE_NOISE_MS)
 
     def measure_read(self, block_id: int) -> float:
-        path = self._block_path(block_id)
-        if not os.path.exists(path):
-            self.measure_write(block_id)
-        t0 = time.perf_counter()
-        with open(path, "rb") as f:
-            _ = f.read()
-        return (time.perf_counter() - t0) * 1000.0
+        """Measure read latency; return simulated value if device unavailable."""
+        if not self._device_available:
+            return BASE_READ_LATENCY_MS + random.uniform(0, READ_NOISE_MS)
+        
+        try:
+            path = self._block_path(block_id)
+            if not os.path.exists(path):
+                self.measure_write(block_id)
+            t0 = time.perf_counter()
+            with open(path, "rb") as f:
+                _ = f.read()
+            return (time.perf_counter() - t0) * 1000.0
+        except Exception as e:
+            log.warning(f"[IO-READ] Block {block_id} read failed: {e} — using simulated latency")
+            self._device_available = False
+            return BASE_READ_LATENCY_MS + random.uniform(0, READ_NOISE_MS)
 
     def measure_write_data(self, block_id: int, data: bytes, extra_delay_ms: float = 0.0) -> float:
-        path = self._block_path(block_id)
+        """Measure write latency for data; return simulated value if device unavailable."""
         if extra_delay_ms > 0:
             time.sleep(extra_delay_ms / 1000.0)
-        t0 = time.perf_counter()
-        with open(path, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        return (time.perf_counter() - t0) * 1000.0
+        
+        if not self._device_available:
+            return BASE_WRITE_LATENCY_MS + random.uniform(0, WRITE_NOISE_MS)
+        
+        try:
+            path = self._block_path(block_id)
+            t0 = time.perf_counter()
+            with open(path, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            return (time.perf_counter() - t0) * 1000.0
+        except Exception as e:
+            log.warning(f"[IO-WRITE-DATA] Block {block_id} write failed: {e} — using simulated latency")
+            self._device_available = False
+            return BASE_WRITE_LATENCY_MS + random.uniform(0, WRITE_NOISE_MS)
 
     def measure_read_data(self, block_id: int) -> Tuple[float, bytes]:
-        path = self._block_path(block_id)
-        if not os.path.exists(path):
-            self.measure_write(block_id)
-        t0 = time.perf_counter()
-        with open(path, "rb") as f:
-            data = f.read()
-        return (time.perf_counter() - t0) * 1000.0, data
+        """Measure read latency for data; return simulated data if device unavailable."""
+        if not self._device_available:
+            return BASE_READ_LATENCY_MS + random.uniform(0, READ_NOISE_MS), b"simulated data from unavailable device"
+        
+        try:
+            path = self._block_path(block_id)
+            if not os.path.exists(path):
+                self.measure_write(block_id)
+            t0 = time.perf_counter()
+            with open(path, "rb") as f:
+                data = f.read()
+            return (time.perf_counter() - t0) * 1000.0, data
+        except Exception as e:
+            log.warning(f"[IO-READ-DATA] Block {block_id} read failed: {e} — using simulated data")
+            self._device_available = False
+            return BASE_READ_LATENCY_MS + random.uniform(0, READ_NOISE_MS), b"simulated data"
 
     def cleanup(self):
         import shutil
@@ -676,7 +788,7 @@ class StressEngine:
         self.blocks = blocks
         self.bucket_manager = bucket_manager
         self.decision = decision_engine
-        self.mode = "mixed"
+        self.mode = "random"
         self.intensity = 1.0
         self._degraded: Dict[int, float] = {}
 
@@ -711,7 +823,7 @@ class StressEngine:
             (0.12 * health_penalty) +
             (0.08 * waf_component) +
             random_noise
-        )
+        ) * SENSITIVITY_MULTIPLIER
         total = max(0, int(error_score * ERROR_OUTPUT_SCALE))
         return {
             "wear_component": round(wear_component, 2),
@@ -744,7 +856,8 @@ class StressEngine:
         wear = block.wear_component
         error_pressure = min(1.0, block.error_rate * 4.0)
         health_penalty = min(1.0, max(0.0, (100.0 - block.health_score) / 100.0))
-        return 1.0 + (0.22 * wear) + (0.14 * error_pressure) + (0.10 * health_penalty)
+        base = 1.0 + (0.22 * wear) + (0.14 * error_pressure) + (0.10 * health_penalty)
+        return base * WRITE_LOAD_MULTIPLIER
 
     def _starting_ecc_stage_index(self, block: BlockState) -> int:
         risk = min(1.0, block.write_count / max(MAX_WRITE_LIMIT, 1))
@@ -1000,11 +1113,18 @@ class StressEngine:
 
     def run_tick(self) -> List[dict]:
         events = []
-        # process more ops per tick (was intensity * 5)
-        count = max(1, int(self.intensity * 15))
+        # Keep transitions visible while still progressing quickly.
+        count = max(1, int(self.intensity * 6))
         for _ in range(count):
             op = self._select_op()
-            selection = self.bucket_manager.select_next_detail(READ_PREFERRED_BUCKETS if op == "read" else None)
+            if self.mode == "random":
+                selection = self.bucket_manager.select_random_detail(
+                    READ_PREFERRED_BUCKETS if op == "read" else WRITE_PREFERRED_BUCKETS
+                )
+            else:
+                selection = self.bucket_manager.select_next_detail(
+                    READ_PREFERRED_BUCKETS if op == "read" else WRITE_PREFERRED_BUCKETS
+                )
             if selection is None:
                 break
 
@@ -1073,9 +1193,9 @@ class StressEngine:
         elif operation == "READ":
             selection = self.bucket_manager.select_next_detail(READ_PREFERRED_BUCKETS)
         else:
-            selection = self.bucket_manager.select_next_detail()
+            selection = self.bucket_manager.select_next_detail(WRITE_PREFERRED_BUCKETS)
         if selection is None:
-            message = "Data cannot be stored because HEALTHY, WEAK, and CRITICAL buckets are empty." if operation == "WRITE" else "Data cannot be read because HEALTHY and WEAK buckets are empty."
+            message = "Data cannot be stored because HEALTHY, WEAK, and CRITICAL buckets are empty." if operation == "WRITE" else "Data cannot be read because HEALTHY, WEAK, and CRITICAL buckets are empty."
             return {
                 "operation": operation,
                 "block_id": None,
@@ -1336,7 +1456,8 @@ class DecisionEngine:
         block.prev_ecc_errors = block.total_generated_errors
         block.prev_eval_time = time.time()
 
-        if decision == "CRITICAL" and not block.is_avoided:
+        if decision == "CRITICAL" and not block.critical_locked:
+            block.critical_locked = True
             block.is_avoided = True
             if block.block_id not in self.avoided_blocks:
                 self.avoided_blocks.append(block.block_id)
@@ -1347,8 +1468,6 @@ class DecisionEngine:
                 self.migration_manager.enqueue(block)
         elif decision == "WARNING" and old_state == "NORMAL":
             self._log(f"[WARNING] Block {block.block_id} score={block.risk_score:.2f} trend={trend_analysis(block)}")
-        elif decision == "NORMAL" and old_state == "WARNING":
-            self._log(f"[RECOVERED] Block {block.block_id} score={block.risk_score:.2f} back to NORMAL")
 
     def evaluate(self):
         """Interval-based: evaluate ALL blocks (catches retention aging, drift)."""
@@ -1361,7 +1480,8 @@ class DecisionEngine:
             blk.prev_ecc_errors = blk.total_generated_errors
             blk.prev_eval_time = time.time()
 
-            if decision == "CRITICAL" and not blk.is_avoided:
+            if decision == "CRITICAL" and not blk.critical_locked:
+                blk.critical_locked = True
                 blk.is_avoided = True
                 if blk.block_id not in self.avoided_blocks:
                     self.avoided_blocks.append(blk.block_id)
@@ -1372,8 +1492,6 @@ class DecisionEngine:
                     self.migration_manager.enqueue(blk)
             elif decision == "WARNING" and old_state != "WARNING":
                 self._log(f"[WARNING] Block {blk.block_id} score={blk.risk_score:.2f}")
-            elif decision == "NORMAL" and old_state == "WARNING":
-                self._log(f"[RECOVERED] Block {blk.block_id} score={blk.risk_score:.2f}")
 
     def top_risky(self, n: int = 5) -> List[dict]:
         active = [b for b in self.blocks if not b.is_avoided]
@@ -1408,6 +1526,7 @@ class MigrationManager:
         self._in_queue: set = set()
         self.migration_log: deque = deque(maxlen=50)
         self._last_op_tick = 0
+        self._healthy_exhaustion_alert_sent = False
 
     def enqueue(self, block: BlockState):
         if block.block_id in self._in_queue:
@@ -1424,6 +1543,28 @@ class MigrationManager:
         recent_ops = sum(1 for e in recent_events if e.get("operation") in ("READ", "WRITE"))
         return recent_ops <= 1
 
+    def _select_target(self, source_id: int) -> Tuple[Optional[int], str]:
+        healthy = [bid for bid in self.bucket_manager.buckets.get(STATE_HEALTHY, []) if bid != source_id]
+        weak = [bid for bid in self.bucket_manager.buckets.get(STATE_WEAK, []) if bid != source_id]
+
+        healthy_fresh = [bid for bid in healthy if self.blocks[bid].write_count == 0]
+        if healthy_fresh:
+            return random.choice(healthy_fresh), STATE_HEALTHY
+
+        if not self._healthy_exhaustion_alert_sent:
+            send_telegram("StorageGuard alert: No previously unwritten HEALTHY blocks remain for migration target selection.")
+            self._healthy_exhaustion_alert_sent = True
+
+        weak_fresh = [bid for bid in weak if self.blocks[bid].write_count == 0]
+        if weak_fresh:
+            return random.choice(weak_fresh), STATE_WEAK
+
+        if healthy:
+            return random.choice(healthy), STATE_HEALTHY
+        if weak:
+            return random.choice(weak), STATE_WEAK
+        return None, "NONE"
+
     def process_one(self, system) -> Optional[dict]:
         if not self._queue:
             return None
@@ -1431,12 +1572,11 @@ class MigrationManager:
         self._in_queue.discard(src_id)
         src_block = self.blocks[src_id]
 
-        # Find a healthy target
-        target_selection = self.bucket_manager.select_next_detail([STATE_HEALTHY])
-        if target_selection is None:
+        # Find a healthy target first; fallback to weak if healthy unavailable.
+        tgt_id, tgt_bucket = self._select_target(src_id)
+        if tgt_id is None:
             self.decision._log(f"[MIGRATE-FAIL] No healthy target for block {src_id}")
             return None
-        tgt_id, tgt_bucket, _ = target_selection
         tgt_block = self.blocks[tgt_id]
 
         # Read from source, write to target
@@ -1481,6 +1621,7 @@ class MigrationManager:
         self._queue.clear()
         self._in_queue.clear()
         self.migration_log.clear()
+        self._healthy_exhaustion_alert_sent = False
 
     @property
     def queue_size(self) -> int:
@@ -1516,9 +1657,6 @@ class StorageGuardSystem:
         self._rw_events: deque = deque(maxlen=20)
         self._manual_sim_event: Optional[dict] = None
         self._manual_event_id = 0
-
-        # Scheduled controlled fault injections
-        self._inject_schedule = {10: (4, 35.0), 22: (11, 50.0), 38: (19, 70.0)}
         self._persist_metadata()
 
     def _persist_metadata(self):
@@ -1559,12 +1697,9 @@ class StorageGuardSystem:
             return self._build_payload()
 
         self._tick += 1
-        if self._tick in self._inject_schedule:
-            blk, delay = self._inject_schedule[self._tick]
-            self.stress.inject_degradation(blk, delay)
-
         results = self.stress.run_tick()
         for event in results:
+            event["tick"] = self._tick
             self._rw_events.appendleft(event)
 
         # Interval-based evaluation (catches aging/drift)
@@ -1668,8 +1803,7 @@ class StorageGuardSystem:
         }
 
     def set_mode(self, mode: str):
-        if mode in StressEngine.MODES:
-            self.stress.mode = mode
+        self.stress.mode = "random"
 
     def set_intensity(self, intensity: float):
         self.stress.intensity = max(0.1, min(1.0, intensity))
@@ -1706,12 +1840,23 @@ class StorageGuardSystem:
         self._prop_latency += (5.0 if block.is_avoided else lat)
         self._persist_metadata()
 
+    def _enqueue_all_critical_for_pause(self):
+        for block in self.blocks:
+            if block.state == STATE_CRITICAL or block.critical_locked:
+                self.migration_manager.enqueue(block)
+
     def toggle_pause(self):
         self._paused = not self._paused
+        if self._paused:
+            self._enqueue_all_critical_for_pause()
+            self.migration_manager._healthy_exhaustion_alert_sent = False
         log.info(f"[PAUSE] Simulation {'paused' if self._paused else 'running'}")
 
     def set_paused(self, paused: bool):
         self._paused = bool(paused)
+        if self._paused:
+            self._enqueue_all_critical_for_pause()
+            self.migration_manager._healthy_exhaustion_alert_sent = False
         log.info(f"[PAUSE] Simulation {'paused' if self._paused else 'running'}")
 
     def cleanup(self):
