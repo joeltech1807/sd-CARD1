@@ -39,7 +39,7 @@ log = logging.getLogger("StorageGuard")
 NUM_BLOCKS         = 32
 BLOCK_SIZE_BYTES   = 256 * 1024     # 256 KB per logical block
 HISTORY_LEN        = 60
-TICK_INTERVAL_S    = 0.6
+TICK_INTERVAL_S    = 0.3  # faster ticks (was 0.6)
 
 STATE_HEALTHY = "HEALTHY"
 STATE_WEAK = "WEAK"
@@ -1000,7 +1000,8 @@ class StressEngine:
 
     def run_tick(self) -> List[dict]:
         events = []
-        count = max(1, int(self.intensity * 5))
+        # process more ops per tick (was intensity * 5)
+        count = max(1, int(self.intensity * 15))
         for _ in range(count):
             op = self._select_op()
             selection = self.bucket_manager.select_next_detail(READ_PREFERRED_BUCKETS if op == "read" else None)
